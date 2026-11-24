@@ -68,20 +68,30 @@ namespace
 		return FLinearColor(L(C.R), L(C.G), L(C.B), C.A * Alpha);
 	}
 
-	UFont* HudFont()
+	/** The engine's composite Roboto (Regular, Bold, ... typefaces), cached by the font system at any size. */
+	UFont* BaseFont()
 	{
-		return GEngine ? GEngine->GetLargeFont() : nullptr;
+		static UFont* Roboto = LoadObject<UFont>(nullptr, TEXT("/Engine/EngineFonts/Roboto.Roboto"));
+		return Roboto ? Roboto : (GEngine ? GEngine->GetLargeFont() : nullptr);
 	}
 }
 
-float ARacingHUD::FontScale(float Size) const
+UFont* ARacingHUD::FontFor(float Size, bool bBold)
 {
-	// Size is the Java font size (pixels at 900 lines): scale the engine font to that height
-	const UFont* F = HudFont();
-	const float H = F ? FMath::Max(1.f, F->GetMaxCharHeight()) : 24.f;
-	return Size * Scale / H * 1.15f;
+	// Size is the Java font size (its line height in pixels at 900 lines). Scaling a small font up
+	// blurs it, so every size gets its own copy of Roboto rasterized at that pixel size: the font
+	// cache renders runtime fonts at LegacyFontSize points (96 DPI: 4/3 pixels per point).
+	UFont* Roboto = BaseFont();
+	if (!Roboto) return nullptr;
+	const int32 Points = FMath::Clamp(FMath::RoundToInt(Size * Scale * 0.80f * 0.75f), 4, 400);
+	const int32 Key = Points * 2 + (bBold ? 1 : 0);
+	if (TObjectPtr<UFont>* Found = Fonts.Find(Key)) return *Found;
+	UFont* F = DuplicateObject<UFont>(Roboto, this);
+	F->LegacyFontSize = Points;
+	F->LegacyFontName = bBold ? FName(TEXT("Bold")) : FName(TEXT("Regular"));
+	Fonts.Add(Key, F);
+	return F;
 }
-
 void ARacingHUD::Rect(float X, float Y, float W, float H, const FLinearColor& Color)
 {
 	const FLinearColor C = Lin(Color, Alpha);
@@ -90,29 +100,22 @@ void ARacingHUD::Rect(float X, float Y, float W, float H, const FLinearColor& Co
 	Canvas->DrawItem(Tile);
 }
 
-float ARacingHUD::Measure(const FString& S, float Size, bool bBold) const
+float ARacingHUD::Measure(const FString& S, float Size, bool bBold)
 {
-	const UFont* F = HudFont();
+	UFont* F = FontFor(Size, bBold);
 	if (!F) return S.Len() * Size * 0.5f;
-	return F->GetStringSize(*S) * FontScale(Size) / Scale;
+	return F->GetStringSize(*S) / Scale;
 }
 
 float ARacingHUD::Text(const FString& S, float Size, const FLinearColor& Color, float X, float Top, bool bBold)
 {
-	UFont* F = HudFont();
+	UFont* F = FontFor(Size, bBold);
 	if (!F) return 0.f;
-	FCanvasTextItem Item(FVector2D(X * Scale, (VH - Top) * Scale), FText::FromString(S), F, Lin(Color, Alpha));
-	const float K = FontScale(Size);
-	Item.Scale = FVector2D(K, K);
-	if (bBold)
-	{
-		// the engine font has no bold face here: a faint shadow gives big titles some weight
-		Item.EnableShadow(FLinearColor(0, 0, 0, 0.6f * Alpha), FVector2D(1.5f, 1.5f));
-	}
+	// whole pixels: text placed between pixels is filtered and looks soft
+	FCanvasTextItem Item(FVector2D(FMath::RoundToFloat(X * Scale), FMath::RoundToFloat((VH - Top) * Scale)), FText::FromString(S), F, Lin(Color, Alpha));
 	Canvas->DrawItem(Item);
-	return Measure(S, Size, bBold);
+	return F->GetStringSize(*S) / Scale;
 }
-
 float ARacingHUD::Centered(const FString& S, float Size, const FLinearColor& Color, float Cx, float Top, bool bBold)
 {
 	const float W = Measure(S, Size, bBold);

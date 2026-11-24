@@ -31,8 +31,9 @@ private:
 	/** @return width of the text (GUI units) */
 	float Text(const FString& S, float Size, const FLinearColor& Color, float X, float Top, bool bBold = false);
 	float Centered(const FString& S, float Size, const FLinearColor& Color, float Cx, float Top, bool bBold = false);
-	float Measure(const FString& S, float Size, bool bBold = false) const;
-	float FontScale(float Size) const;
+	float Measure(const FString& S, float Size, bool bBold = false);
+	/** The engine's Roboto at exactly this size (Java GUI units) and weight, rasterized at that pixel size. */
+	class UFont* FontFor(float Size, bool bBold);
 
 	void DrawSplash(ARacingGameMode* Gm, float Opacity);
 	void DrawMenu(ARacingGameMode* Gm);
@@ -47,4 +48,8 @@ private:
 	float VW = 1600.f, VH = 900.f;
 	float Alpha = 1.f;
 	float WheelRotation = 0.f;
+
+	/** Font copies keyed by point size * 2 + bold. */
+	UPROPERTY()
+	TMap<int32, TObjectPtr<class UFont>> Fonts;
 };

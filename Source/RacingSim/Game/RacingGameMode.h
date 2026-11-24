@@ -166,6 +166,8 @@ private:
 	float CheckSeconds = 260.f;
 	bool bShotMenu = false;
 	bool bShotTCam = false;
+	bool bShotShowcase = false;
+	bool bShotNoHud = false;
 	TArray<float> ShotTimes;
 	int32 NextShot = 0;
 	double StateStartTime = 0.0;

@@ -536,7 +536,16 @@ void ARaceCar::UpdateCamera(float DeltaSeconds)
 		if (Size.Y > 0) Aspect = Size.X / Size.Y;
 	}
 
-	if (!bTCam)
+	if (bShowcase)
+	{
+		// port of CameraController.SHOWCASE: 7.5 m ahead, 1.2 m to the left, 1 m up, looking back
+		const FVector Right = FVector::CrossProduct(FVector::UpVector, FlatFwd);
+		const FVector CamPos = CarPos + FlatFwd * 750.f - Right * 120.f + FVector(0, 0, 100.f);
+		const FVector LookAt = CarPos - FlatFwd * 250.f + FVector(0, 0, 35.f);
+		Camera->SetWorldLocationAndRotation(CamPos, (LookAt - CamPos).Rotation());
+		Camera->SetFieldOfView(HorizontalFov(50.f, Aspect));
+	}
+	else if (!bTCam)
 	{
 		const FVector Desired = FlatFwd * -850.f + FVector(0, 0, 260.f);
 		const float A = bSnapCamera ? 1.f : 1.f - FMath::Exp(-DeltaSeconds * 7.f);

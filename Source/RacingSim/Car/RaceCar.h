@@ -79,6 +79,8 @@ public:
 	bool ConsumeResetRequest() { return ResetRequest.exchange(false); }
 
 	void SetTCam(bool bOn) { bTCam = bOn; bSnapCamera = true; }
+	/** Screenshot camera: low, ahead of the car, looking back at it and the pack. */
+	void SetShowcase(bool bOn) { bShowcase = bOn; }
 	/** World transform of the center of mass (the model root). */
 	FTransform GetComTransform() const;
 	/** Test placement: center of mass (m), orientation, velocity (m/s), wheel speed (m/s); applied on the next physics step. */
@@ -179,6 +181,7 @@ private:
 
 	// ---- camera ----
 	bool bTCam = false;
+	bool bShowcase = false;
 	bool bSnapCamera = true;
 	FVector SmoothedOffset = FVector(-850, 0, 260);
 };

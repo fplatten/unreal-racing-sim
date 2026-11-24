@@ -25,6 +25,7 @@
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "GameFramework/HUD.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
@@ -261,7 +262,10 @@ void ARacingGameMode::StartPlay()
 		if (!bShotMenu) bQuickStart = true;
 	}
 	FString Cam;
-	bShotTCam = FParse::Value(Cmd, TEXT("ShotCam="), Cam) && Cam == TEXT("tcam");
+	FParse::Value(Cmd, TEXT("ShotCam="), Cam);
+	bShotTCam = Cam == TEXT("tcam");
+	bShotShowcase = Cam == TEXT("showcase");
+	bShotNoHud = FParse::Param(Cmd, TEXT("ShotNoHud"));
 
 	Super::StartPlay();
 	SplashStatus = FString(LoadSteps[0]) + TEXT("...");
@@ -469,6 +473,9 @@ void ARacingGameMode::StartRace()
 	{
 		Watched->SetDrivingEnabled(true);
 		if (bShotTCam) Watched->SetTCam(true);
+		if (bShotShowcase) Watched->SetShowcase(true);
+		// clean renders (the splash art): no HUD drawn over the scene
+		if (bShotNoHud && Pc() && Pc()->GetHUD()) Pc()->GetHUD()->bShowHUD = false;
 		if (Pc()) Pc()->SetViewTarget(Watched);
 	}
 }
@@ -685,7 +692,7 @@ void ARacingGameMode::AutomationTick()
 	if (bShotMenu && State == ERaceState::Menu && NextShot < ShotTimes.Num() && RealT >= ShotTimes[NextShot])
 	{
 		const FString File = FPaths::ProjectSavedDir() / TEXT("Screenshots") / FString::Printf(TEXT("autoshot_%02d.png"), NextShot);
-		FScreenshotRequest::RequestScreenshot(File, true, false);
+		FScreenshotRequest::RequestScreenshot(File, !bShotNoHud, false);
 		NextShot++;
 		return;
 	}
@@ -706,7 +713,7 @@ void ARacingGameMode::AutomationTick()
 	if (!bShotMenu && NextShot < ShotTimes.Num() && T >= ShotTimes[NextShot])
 	{
 		const FString File = FPaths::ProjectSavedDir() / TEXT("Screenshots") / FString::Printf(TEXT("autoshot_%02d.png"), NextShot);
-		FScreenshotRequest::RequestScreenshot(File, true, false);
+		FScreenshotRequest::RequestScreenshot(File, !bShotNoHud, false);
 		UE_LOG(LogRacingSim, Display, TEXT("SimCheck: screenshot %s"), *File);
 		NextShot++;
 	}
