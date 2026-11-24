@@ -174,6 +174,30 @@ void ARaceCar::ApplyLivery()
 		Mid->SetScalarParameterValue(TEXT("Metallic"), 0.f);
 		BodyMesh->SetMaterial(i, Mid);
 	}
+
+	// Tires: the Java TireTexture worn racing slick (scrubbed gray tread, rubber pick-up at the
+	// shoulders, molded sidewall lettering), baked by Scripts/BakeTextures.java. The lathe-turned
+	// tire surface is single sided, so it is drawn from both sides like the Java material.
+	UMaterialInterface* TwoSided = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_SurfaceTwoSided.M_SurfaceTwoSided"));
+	UTexture* TireAlbedo = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/tire_albedo.tire_albedo"));
+	UTexture* TireNormal = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/tire_normal.tire_normal"));
+	UTexture* TireRough = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/tire_rough.tire_rough"));
+	if (!TwoSided || !TireAlbedo || !TireNormal || !TireRough) return;
+	UMaterialInstanceDynamic* Tire = UMaterialInstanceDynamic::Create(TwoSided, this);
+	Tire->SetTextureParameterValue(TEXT("Albedo"), TireAlbedo);
+	Tire->SetTextureParameterValue(TEXT("Normal"), TireNormal);
+	Tire->SetTextureParameterValue(TEXT("RoughTex"), TireRough);
+	Tire->SetScalarParameterValue(TEXT("UseAlbedo"), 1.f);
+	Tire->SetScalarParameterValue(TEXT("UseNormal"), 1.f);
+	Tire->SetScalarParameterValue(TEXT("UseRoughTex"), 1.f);
+	Tire->SetVectorParameterValue(TEXT("Tint"), FLinearColor::White);
+	Tire->SetScalarParameterValue(TEXT("Roughness"), 1.f);
+	Tire->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+	for (UStaticMeshComponent* W : WheelMesh)
+	{
+		const int32 Slot = W->GetMaterialIndex(TEXT("Tire"));
+		if (Slot != INDEX_NONE) W->SetMaterial(Slot, Tire);
+	}
 }
 
 void ARaceCar::OnBodyHit(UPrimitiveComponent* HitComp, AActor* Other, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)

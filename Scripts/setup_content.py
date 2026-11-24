@@ -9,11 +9,11 @@ It is safe to run again: existing assets are replaced. The source files are in S
 
   SourceArt/Models, SourceArt/Textures   glb models and PNGs (from the Java game's src/main/resources)
   SourceArt/Liveries                     painted liveries and helmets (the Java game's `gradlew bakeLiveries`)
-  SourceArt/Generated                    sponsor boards and smoke puffs (`java Scripts/BakeTextures.java SourceArt/Generated`)
+  SourceArt/Generated                    sponsor boards, smoke puffs and tire maps (`java Scripts/BakeTextures.java SourceArt/Generated`)
 
   /Game/Textures/{Track,Car,Props,UI,Sky}/*   PNGs
   /Game/Textures/Liveries/T_{Livery,Helmet}_N  painted cars
-  /Game/Textures/Generated/*                   banner, smoke puffs
+  /Game/Textures/Generated/*                   banner, smoke puffs, tire albedo/normal/rough
   /Game/Models/{Car,Props}/*                   glb models (one static mesh each)
   /Game/Materials/*                            M_Surface(+TwoSided), M_Fence, M_Sky, M_Smoke
   /Game/Maps/Oval                              empty level; the game mode spawns everything

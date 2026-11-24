@@ -36,7 +36,7 @@ Requirements: Unreal Engine 5.8, and Visual Studio 2022 Build Tools with the C++
 
 - `SourceArt/Models`, `SourceArt/Textures`: the Java game's Blender models and textures
 - `SourceArt/Liveries`: car and helmet paint, baked by the Java game's `gradlew bakeLiveries`
-- `SourceArt/Generated`: sponsor boards and smoke puffs, made by `java Scripts/BakeTextures.java SourceArt/Generated`
+- `SourceArt/Generated`: sponsor boards, smoke puffs and tire maps, made by `java Scripts/BakeTextures.java SourceArt/Generated`
 
 ## Headless checks
 
