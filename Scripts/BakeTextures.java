@@ -1,10 +1,15 @@
+import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Font;
 import java.awt.GradientPaint;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.font.GlyphVector;
+import java.awt.Shape;
 import java.awt.geom.AffineTransform;
+import java.awt.geom.Ellipse2D;
+import java.awt.geom.Line2D;
+import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -14,8 +19,9 @@ import javax.imageio.ImageIO;
 /**
  * Bakes the textures the Java game paints at start-up with AWT, so the Unreal port can import
  * them: the grandstand sponsor boards (com.racingsim.track.BannerTexture), the tire smoke puff
- * atlas (com.racingsim.vehicle.TireSmoke.puffAtlas) and the worn racing slick maps
- * (com.racingsim.vehicle.TireTexture). The drawing code is copied verbatim.
+ * atlas (com.racingsim.vehicle.TireSmoke.puffAtlas), the worn racing slick maps
+ * (com.racingsim.vehicle.TireTexture) and the bodywork detail maps (com.racingsim.vehicle.BodyDetail).
+ * The drawing code is copied verbatim.
  *
  *   java Scripts/BakeTextures.java SourceArt/Generated
  */
@@ -30,7 +36,10 @@ public final class BakeTextures {
         ImageIO.write(tire[0], "png", new File(dir, "tire_albedo.png"));
         ImageIO.write(tire[1], "png", new File(dir, "tire_normal.png"));
         ImageIO.write(tire[2], "png", new File(dir, "tire_rough.png"));
-        System.out.println("baked banner, smoke_puffs and tire_albedo/normal/rough into " + dir.getAbsolutePath());
+        BufferedImage[] body = bodyMaps();
+        ImageIO.write(body[0], "png", new File(dir, "body_normal.png"));
+        ImageIO.write(body[1], "png", new File(dir, "body_rough.png"));
+        System.out.println("baked banner, smoke_puffs, tire_albedo/normal/rough and body_normal/rough into " + dir.getAbsolutePath());
     }
 
     // ---------------------------------------------------------------- BannerTexture.create
@@ -250,6 +259,168 @@ public final class BakeTextures {
             }
         }
         return img;
+    }
+
+    // ---------------------------------------------------------------- BodyDetail
+    // Surface detail for the livery UV sheet, shared by every car: a normal map (panel seams, Dzus
+    // fasteners, stone chips, rubber marbles) and roughness (R: glossy clear coat, rougher where the
+    // car is dirty) with ambient occlusion (G: darker in the seams). The wear colors (grime,
+    // marbles, chips, soot) are already in the baked liveries (LiveryPainter.weather).
+    static final float Y_MIN = -2.5f, Y_MAX = 2.6f, Z_MAX = 1.25f, X_MAX = 1.0f;
+    static final float L = Y_MAX - Y_MIN;
+    static final int BS = 2048;
+
+    static AffineTransform side(int side, int size) {
+        return side == 0
+                ? new AffineTransform(size / L, 0, 0, -0.25 * size / Z_MAX, -Y_MIN * size / L, 0.25 * size)
+                : new AffineTransform(-size / L, 0, 0, -0.25 * size / Z_MAX, Y_MAX * size / L, 0.50 * size);
+    }
+
+    static AffineTransform top(int size) {
+        return new AffineTransform(size / L, 0, 0, 0.2 * size / X_MAX, -Y_MIN * size / L, 0.7 * size);
+    }
+
+    static BufferedImage[] bodyMaps() {
+        int n = BS;
+        float[] grime = new float[n * n];
+        float[] marbles = new float[n * n];
+        float[] chips = new float[n * n];
+        float[] soot = new float[n * n];
+        Random rnd = new Random(1234);
+        float[] noise = smoothNoise(n, n, 96, 96, rnd);
+        float[] fine = smoothNoise(n, n, 512, 512, rnd);
+
+        for (int r = 0; r < n; r++) {
+            float vb = 1f - (r + 0.5f) / n;
+            for (int c = 0; c < n; c++) {
+                float u = (c + 0.5f) / n;
+                int i = r * n + c;
+                float nz = noise[i], fz = fine[i];
+                float g = 0f, s = 0f, marbleDensity = 0f, chipDensity = 0f;
+                if (vb >= 0.5f) {
+                    float z = (vb - (vb >= 0.75f ? 0.75f : 0.5f)) * 4f * Z_MAX;
+                    float y = vb >= 0.75f ? Y_MIN + u * L : Y_MAX - u * L;
+                    float low = clamp01(1f - z / 0.24f);
+                    float between = band(y, -1.40f, 1.10f, 0.25f);
+                    float hot = Math.max(band(y, -1.40f, -0.55f, 0.3f), band(y, 0.45f, 1.10f, 0.3f));
+                    g = low * between * (0.45f + 0.45f * hot) * (0.55f + 0.9f * (nz - 0.5f));
+                    marbleDensity = low * hot * 0.020f + band(y, 0.40f, 1.45f, 0.2f)
+                            * clamp01(1f - z / 0.42f) * 0.010f;
+                    if (y < -1.85f && z < 0.32f) {
+                        chipDensity = 0.010f;
+                        g = Math.max(g, clamp01(1f - z / 0.12f) * 0.5f * nz);
+                    }
+                    if (y < -2.05f) chipDensity = Math.max(chipDensity, 0.008f);
+                    if (y > 1.75f) s = clamp01(1f - (z - 0.20f) / 0.35f) * (0.45f + 0.6f * (nz - 0.5f));
+                } else if (vb >= 0.10f) {
+                    float x = X_MAX - (vb - 0.10f) / 0.40f * 2f * X_MAX;
+                    float y = Y_MIN + u * L;
+                    float ax = Math.abs(x);
+                    g = 0.10f * nz;
+                    if (y < -1.90f && ax > 0.10f) {
+                        g = Math.max(g, 0.22f * nz);
+                        chipDensity = y < -2.28f ? 0.030f : 0.006f;
+                    }
+                    if (y < -2.25f && ax < 0.10f) chipDensity = 0.020f;
+                    if (ax > 0.42f && y > 0.55f && y < 1.45f) {
+                        marbleDensity = 0.010f * band(ax, 0.45f, 0.85f, 0.1f);
+                        g = Math.max(g, 0.30f * nz);
+                    }
+                    if (y > 1.85f && ax < 0.16f) s = 0.4f * nz;
+                } else {
+                    g = 0.7f;
+                }
+                grime[i] = clamp01(g + 0.1f * (fz - 0.5f) * (g > 0 ? 1 : 0));
+                soot[i] = clamp01(s);
+                if (marbleDensity > 0f && rnd.nextFloat() < marbleDensity * 0.12f) stamp(marbles, c, r, 1 + rnd.nextInt(2), rnd, 0.8f);
+                if (chipDensity > 0f && rnd.nextFloat() < chipDensity * 0.25f) stamp(chips, c, r, 1 + rnd.nextInt(2), rnd, 0.8f);
+            }
+        }
+
+        BufferedImage seams = new BufferedImage(n, n, BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D g = seams.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        g.setColor(Color.WHITE);
+        for (int sd = 0; sd < 2; sd++) {
+            Graphics2D s = (Graphics2D) g.create();
+            s.clip(new java.awt.Rectangle(0, sd == 0 ? 0 : n / 4, n, n / 4));
+            s.transform(side(sd, n));
+            s.setStroke(new BasicStroke(0.0045f));
+            s.draw(new Line2D.Double(-1.20, 0.10, -1.20, 0.56));
+            s.draw(new Line2D.Double(0.32, 0.40, 0.32, 0.86));
+            s.draw(poly(-0.66, 0.425, 0.0, 0.43, 0.60, 0.41, 1.05, 0.36));
+            s.draw(new Line2D.Double(0.98, 0.14, 0.98, 0.37));
+            s.draw(poly(0.32, 0.86, 0.9, 0.73, 1.35, 0.60, 1.90, 0.47));
+            fasteners(s, -1.20, 0.16, -1.20, 0.50, 4);
+            fasteners(s, -0.60, 0.40, 1.00, 0.35, 9);
+            fasteners(s, 0.32, 0.46, 0.32, 0.80, 3);
+            s.dispose();
+        }
+        Graphics2D t = (Graphics2D) g.create();
+        t.clip(new java.awt.Rectangle(0, n / 2, n, (int) (0.4 * n)));
+        t.transform(top(n));
+        t.setStroke(new BasicStroke(0.0045f));
+        t.draw(new Line2D.Double(-1.20, -0.26, -1.20, 0.26));
+        t.draw(poly(0.30, -0.34, 1.40, -0.21, 1.95, -0.12, 1.95, 0.12, 1.40, 0.21, 0.30, 0.34, 0.30, -0.34));
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            t.draw(poly(-0.55, sgn * 0.44, 0.55, sgn * 0.44, 0.55, sgn * 0.74, -0.55, sgn * 0.74, -0.55, sgn * 0.44));
+            fasteners(t, -0.50, sgn * 0.44, 0.50, sgn * 0.44, 6);
+            fasteners(t, 0.35, sgn * 0.32, 1.85, sgn * 0.13, 8);
+        }
+        t.dispose();
+        g.dispose();
+
+        float[] height = new float[n * n];
+        BufferedImage mr = new BufferedImage(n, n, BufferedImage.TYPE_INT_RGB);
+        int[] row = new int[n];
+        for (int r = 0; r < n; r++) {
+            for (int c = 0; c < n; c++) {
+                int i = r * n + c;
+                float seam = seams.getRaster().getSample(c, r, 0) / 255f;
+                height[i] = -seam - 0.6f * chips[i] + 0.35f * marbles[i];
+                float ao = 1f - 0.45f * seam;
+                float rgh = 0.10f + 0.45f * grime[i] + 0.35f * soot[i];
+                rgh = Math.max(rgh, 0.55f * chips[i]);
+                rgh = Math.max(rgh, 0.85f * marbles[i]);
+                int r8 = Math.round(clamp01(rgh) * 255f), a8 = Math.round(ao * 255f);
+                row[c] = (r8 << 16) | (a8 << 8);
+            }
+            mr.setRGB(0, r, n, 1, row, 0, n);
+        }
+        return new BufferedImage[]{normalMap(height, n, n, 1.6f), mr};
+    }
+
+    private static void stamp(float[] mask, int cx, int cy, int r, Random rnd, float strength) {
+        int n = BS;
+        float ry = r * (0.6f + 0.8f * rnd.nextFloat());
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                float d = (dx * dx) / (float) (r * r) + (dy * dy) / (ry * ry);
+                if (d > 1f) continue;
+                int x = cx + dx, y = cy + dy;
+                if (x < 0 || y < 0 || x >= n || y >= n) continue;
+                int i = y * n + x;
+                mask[i] = Math.max(mask[i], strength * (1f - 0.3f * d));
+            }
+        }
+    }
+
+    private static void fasteners(Graphics2D g, double y0, double z0, double y1, double z1, int count) {
+        double rad = 0.007;
+        for (int k = 0; k < count; k++) {
+            double f = count == 1 ? 0.5 : (double) k / (count - 1);
+            double y = y0 + (y1 - y0) * f, z = z0 + (z1 - z0) * f - 0.018;
+            g.draw(new Ellipse2D.Double(y - rad, z - rad, 2 * rad, 2 * rad));
+            g.draw(new Line2D.Double(y - rad * 0.6, z, y + rad * 0.6, z));
+        }
+    }
+
+    private static Shape poly(double... xy) {
+        Path2D.Double p = new Path2D.Double();
+        p.moveTo(xy[0], xy[1]);
+        for (int i = 2; i < xy.length; i += 2) p.lineTo(xy[i], xy[i + 1]);
+        return p;
     }
 
     static float clamp01(float v) {

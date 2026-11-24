@@ -9,11 +9,11 @@ It is safe to run again: existing assets are replaced. The source files are in S
 
   SourceArt/Models, SourceArt/Textures   glb models and PNGs (from the Java game's src/main/resources)
   SourceArt/Liveries                     painted liveries and helmets (the Java game's `gradlew bakeLiveries`)
-  SourceArt/Generated                    sponsor boards, smoke puffs and tire maps (`java Scripts/BakeTextures.java SourceArt/Generated`)
+  SourceArt/Generated                    sponsor boards, smoke puffs, tire and body detail maps (`java Scripts/BakeTextures.java SourceArt/Generated`)
 
   /Game/Textures/{Track,Car,Props,UI,Sky}/*   PNGs
   /Game/Textures/Liveries/T_{Livery,Helmet}_N  painted cars
-  /Game/Textures/Generated/*                   banner, smoke puffs, tire albedo/normal/rough
+  /Game/Textures/Generated/*                   banner, smoke puffs, tire and body detail maps
   /Game/Models/{Car,Props}/*                   glb models (one static mesh each)
   /Game/Materials/*                            M_Surface(+TwoSided), M_Fence, M_Sky, M_Smoke
   /Game/Maps/Oval                              empty level; the game mode spawns everything
@@ -206,6 +206,16 @@ def make_surface_material(path="/Game/Materials/M_Surface", two_sided=False):
     r = lerp_one(m, rough, "R", use_rough, -600, 600)
     r = mult(m, r, "", roughness, "", -300, 500)
     mel.connect_material_property(r, "", unreal.MaterialProperty.MP_ROUGHNESS)
+
+    # ambient occlusion packed in the roughness texture's green channel (car body seams)
+    use_ao = scalar(m, "UseAO", 0.0, -600, 800)
+    one = mel.create_material_expression(m, unreal.MaterialExpressionConstant, -600, 900)
+    one.set_editor_property("r", 1.0)
+    ao = mel.create_material_expression(m, unreal.MaterialExpressionLinearInterpolate, -300, 850)
+    mel.connect_material_expressions(one, "", ao, "A")
+    mel.connect_material_expressions(rough, "G", ao, "B")
+    mel.connect_material_expressions(use_ao, "", ao, "Alpha")
+    mel.connect_material_property(ao, "", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
     mel.connect_material_property(scalar(m, "Metallic", 0.0, -300, 300), "", unreal.MaterialProperty.MP_METALLIC)
     emissive = mel.create_material_expression(m, unreal.MaterialExpressionVectorParameter, -300, 700)
     emissive.set_editor_property("parameter_name", "Emissive")
@@ -360,21 +370,26 @@ def make_map():
     log("map " + path)
 
 
-import_textures(os.path.join(RES, "Textures", "Track"), "/Game/Textures/Track")
-import_textures(os.path.join(RES, "Textures", "Car"), "/Game/Textures/Car")
-import_textures(os.path.join(RES, "Textures", "Props"), "/Game/Textures/Props")
-import_textures(os.path.join(RES, "Textures", "UI"), "/Game/Textures/UI")
-import_textures(os.path.join(RES, "Textures", "Sky"), "/Game/Textures/Sky")
-sky_settings()
-import_generated(os.path.join(ART, "Generated"), "/Game/Textures/Generated")
-import_liveries(os.path.join(ART, "Liveries"), "/Game/Textures/Liveries")
-pipeline = gltf_pipeline()
-import_models(os.path.join(RES, "Models", "Car"), "/Game/Models/Car", pipeline)
-import_models(os.path.join(RES, "Models", "Props"), "/Game/Models/Props", pipeline)
-make_surface_material()
-make_surface_material("/Game/Materials/M_SurfaceTwoSided", True)
-make_fence_material()
-make_sky_material()
-make_smoke_material()
-make_map()
-log("done")
+def main():
+    import_textures(os.path.join(RES, "Textures", "Track"), "/Game/Textures/Track")
+    import_textures(os.path.join(RES, "Textures", "Car"), "/Game/Textures/Car")
+    import_textures(os.path.join(RES, "Textures", "Props"), "/Game/Textures/Props")
+    import_textures(os.path.join(RES, "Textures", "UI"), "/Game/Textures/UI")
+    import_textures(os.path.join(RES, "Textures", "Sky"), "/Game/Textures/Sky")
+    sky_settings()
+    import_generated(os.path.join(ART, "Generated"), "/Game/Textures/Generated")
+    import_liveries(os.path.join(ART, "Liveries"), "/Game/Textures/Liveries")
+    pipeline = gltf_pipeline()
+    import_models(os.path.join(RES, "Models", "Car"), "/Game/Models/Car", pipeline)
+    import_models(os.path.join(RES, "Models", "Props"), "/Game/Models/Props", pipeline)
+    make_surface_material()
+    make_surface_material("/Game/Materials/M_SurfaceTwoSided", True)
+    make_fence_material()
+    make_sky_material()
+    make_smoke_material()
+    make_map()
+    log("done")
+
+
+if __name__ == "__main__":
+    main()

@@ -148,6 +148,11 @@ void ARaceCar::ApplyLivery()
 	// materials have their colors baked in, so these parts get the parameterized surface material.
 	UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Surface.M_Surface"));
 	if (!Surface) return;
+	// Java BodyDetail, shared by every livery: panel seams, fasteners, stone chips and rubber
+	// marbles (normal map), and a glossy clear coat that is rougher where the car is dirty
+	// (roughness in R) with the seams darkened (ambient occlusion in G).
+	UTexture* BodyNormal = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/body_normal.body_normal"));
+	UTexture* BodyRough = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/body_rough.body_rough"));
 	const TArray<FName> Slots = BodyMesh->GetMaterialSlotNames();
 	for (int32 i = 0; i < Slots.Num(); i++)
 	{
@@ -172,6 +177,15 @@ void ARaceCar::ApplyLivery()
 		// clear-coated paint, glossy helmet
 		Mid->SetScalarParameterValue(TEXT("Roughness"), bLivery ? 0.25f : 0.10f);
 		Mid->SetScalarParameterValue(TEXT("Metallic"), 0.f);
+		if (bLivery && BodyNormal && BodyRough)
+		{
+			Mid->SetTextureParameterValue(TEXT("Normal"), BodyNormal);
+			Mid->SetTextureParameterValue(TEXT("RoughTex"), BodyRough);
+			Mid->SetScalarParameterValue(TEXT("UseNormal"), 1.f);
+			Mid->SetScalarParameterValue(TEXT("UseRoughTex"), 1.f);
+			Mid->SetScalarParameterValue(TEXT("UseAO"), 1.f);
+			Mid->SetScalarParameterValue(TEXT("Roughness"), 1.f);   // the map holds the roughness
+		}
 		BodyMesh->SetMaterial(i, Mid);
 	}
 

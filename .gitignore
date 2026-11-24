@@ -14,3 +14,4 @@ Package/
 *.slnx
 # cook logs
 Build/Windows/FileOpenOrder/
+__pycache__/
