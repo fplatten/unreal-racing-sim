@@ -1,0 +1,853 @@
+#include "Game/RacingGameMode.h"
+#include "Car/RaceCar.h"
+#include "Game/RaceDirector.h"
+#include "Game/RacingHUD.h"
+#include "Track/OvalTrack.h"
+#include "Track/Scenery.h"
+#include "Track/WallContactFilter.h"
+#include "Car/TireSmoke.h"
+#include "Engine/PostProcessVolume.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/CollisionProfile.h"
+#include "Materials/Material.h"
+#include "MaterialShared.h"
+#include "Engine/StaticMesh.h"
+#include "Components/StaticMeshComponent.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/Engine.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "Engine/SkyLight.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "Kismet/GameplayStatics.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Paths.h"
+#include "UnrealClient.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogRacingSim, Log, All);
+
+namespace
+{
+	constexpr float MphPerMs = 2.23694f;
+	constexpr float ResultsDelay = 2.f;
+	constexpr float RepeatDelay = 0.4f, RepeatInterval = 0.08f;
+	constexpr float SplashFadeTime = 0.6f;
+	const TCHAR* LoadSteps[] = {
+		TEXT("Lighting the sky"), TEXT("Building the 2.5-mile oval"), TEXT("Raising the grandstands"),
+		TEXT("Starting the race director"), TEXT("Rolling out the field"), TEXT("Tuning the engines"), TEXT("Warming up the tires") };
+	constexpr int32 NumLoadSteps = UE_ARRAY_COUNT(LoadSteps);
+
+	/**
+	 * Low warm golden-hour sun, sky, sky light and haze (stands in for the Java Environment class:
+	 * sun 13 degrees up at azimuth 60 degrees, from Blender's frame).
+	 */
+	ASkyLight* SpawnEnvironment(UWorld* World)
+	{
+		constexpr float SunElevation = 13.f, SunAzimuth = 60.f;
+		const FRotator SunRot(-SunElevation, 180.f - SunAzimuth, 0.f);
+		ADirectionalLight* Sun = World->SpawnActor<ADirectionalLight>(FVector::ZeroVector, SunRot);
+		UDirectionalLightComponent* L = CastChecked<UDirectionalLightComponent>(Sun->GetLightComponent());
+		L->SetMobility(EComponentMobility::Movable);
+		L->SetIntensity(7.f);
+		L->SetLightColor(FLinearColor(1.0f, 0.82f, 0.60f));
+		L->SetDynamicShadowDistanceMovableLight(40000.f);
+
+		// the golden-hour sky painted in Blender (blender/make_sky.py) on a dome around everything;
+		// its painted sun sits where the directional light comes from
+		AStaticMeshActor* SkyDome = World->SpawnActor<AStaticMeshActor>();
+		UStaticMeshComponent* Dome = SkyDome->GetStaticMeshComponent();
+		// no collision at all, before it gets a mesh: a blocking 8 km sphere around the track
+		// stops every car dead
+		Dome->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+		Dome->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Dome->SetGenerateOverlapEvents(false);
+		SkyDome->SetActorEnableCollision(false);
+		Dome->SetMobility(EComponentMobility::Movable);
+		Dome->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")));
+		UMaterialInterface* SkyMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Sky.M_Sky"));
+		Dome->SetMaterial(0, SkyMat);
+		Dome->SetWorldScale3D(FVector(16000.f));   // 8 km radius
+		Dome->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Dome->SetCastShadow(false);
+
+		ASkyLight* Sky = World->SpawnActor<ASkyLight>();
+		USkyLightComponent* S = Sky->GetLightComponent();
+		S->SetMobility(EComponentMobility::Movable);
+		// captured once the scene is complete (see LoadingTick): the painted sky dome lights everything
+		S->bRealTimeCapture = false;
+		S->SourceType = ESkyLightSourceType::SLS_CapturedScene;
+		// fill light from the sky: the low sun leaves the faces of the back-straight stands in shade
+		S->SetIntensity(2.2f);
+		S->SetLowerHemisphereColor(FLinearColor(0.18f, 0.20f, 0.14f));
+		S->bLowerHemisphereIsBlack = false;
+		S->RecaptureSky();
+		AExponentialHeightFog* Fog = World->SpawnActor<AExponentialHeightFog>();
+		Fog->GetComponent()->SetFogDensity(0.0015f);
+		Fog->GetComponent()->SetFogInscatteringColor(FLinearColor(0.55f, 0.50f, 0.45f));
+
+		// a fixed exposure and a warm, slightly contrasty grade (the Java ColorGradeFilter)
+		APostProcessVolume* Pp = World->SpawnActor<APostProcessVolume>();
+		Pp->bUnbound = true;
+		FPostProcessSettings& P = Pp->Settings;
+		P.bOverride_AutoExposureBias = true;
+		P.AutoExposureBias = -0.6f;
+		P.bOverride_ColorSaturation = true;
+		P.ColorSaturation = FVector4(1.08, 1.04, 0.96, 1.0);
+		P.bOverride_ColorContrast = true;
+		P.ColorContrast = FVector4(1.08, 1.08, 1.08, 1.0);
+		P.bOverride_WhiteTemp = true;
+		P.WhiteTemp = 5900.f;
+		P.bOverride_VignetteIntensity = true;
+		P.VignetteIntensity = 0.25f;
+		P.bOverride_MotionBlurAmount = true;
+		P.MotionBlurAmount = 0.f;
+		return Sky;
+	}
+	// ---- liveries (port of com.racingsim.vehicle.Livery; colors are sRGB) ----
+	struct FLivery
+	{
+		FString Name;
+		FLinearColor Primary, Secondary, Accent;
+		int32 Number;
+	};
+
+	FLinearColor Srgb(float R, float G, float B)
+	{
+		return FLinearColor::FromSRGBColor(FColor(FMath::RoundToInt(R * 255), FMath::RoundToInt(G * 255), FMath::RoundToInt(B * 255)));
+	}
+
+	FLinearColor Hsv(float H, float S, float V)
+	{
+		float R, G, B;
+		const int32 I = (int32)(H * 6) % 6;
+		const float F = H * 6 - (int32)(H * 6), P = V * (1 - S), Q = V * (1 - F * S), T = V * (1 - (1 - F) * S);
+		switch (I)
+		{
+		case 0: R = V; G = T; B = P; break;
+		case 1: R = Q; G = V; B = P; break;
+		case 2: R = P; G = V; B = T; break;
+		case 3: R = P; G = Q; B = V; break;
+		case 4: R = T; G = P; B = V; break;
+		default: R = V; G = P; B = Q; break;
+		}
+		return Srgb(R, G, B);
+	}
+
+	FLivery LiveryForIndex(int32 Index)
+	{
+		static const FLivery Palette[] = {
+			{ TEXT("Player"), Srgb(0.05f, 0.22f, 0.72f), Srgb(0.96f, 0.96f, 0.97f), Srgb(0.86f, 0.08f, 0.10f), 5 },
+			{ TEXT("Crimson"), Srgb(0.78f, 0.03f, 0.05f), Srgb(0.97f, 0.97f, 0.97f), Srgb(0.08f, 0.08f, 0.09f), 12 },
+			{ TEXT("Papaya"), Srgb(1.00f, 0.45f, 0.03f), Srgb(0.07f, 0.17f, 0.45f), Srgb(0.96f, 0.96f, 0.96f), 7 },
+			{ TEXT("Viper"), Srgb(0.04f, 0.45f, 0.16f), Srgb(0.96f, 0.96f, 0.96f), Srgb(0.98f, 0.80f, 0.08f), 9 },
+			{ TEXT("Midnight"), Srgb(0.03f, 0.03f, 0.04f), Srgb(0.10f, 0.10f, 0.12f), Srgb(0.90f, 0.70f, 0.18f), 3 },
+			{ TEXT("Sunburst"), Srgb(0.98f, 0.78f, 0.04f), Srgb(0.98f, 0.84f, 0.10f), Srgb(0.08f, 0.08f, 0.10f), 22 },
+			{ TEXT("Magenta"), Srgb(0.80f, 0.05f, 0.50f), Srgb(0.97f, 0.97f, 0.97f), Srgb(0.10f, 0.10f, 0.12f), 14 },
+			{ TEXT("Teal"), Srgb(0.00f, 0.48f, 0.54f), Srgb(0.96f, 0.96f, 0.96f), Srgb(1.00f, 0.50f, 0.05f), 31 },
+		};
+		static const TCHAR* MoreNames[] = {
+			TEXT("Cobalt"), TEXT("Lime"), TEXT("Scarlet"), TEXT("Indigo"), TEXT("Amber"), TEXT("Jade"), TEXT("Ruby"), TEXT("Onyx"),
+			TEXT("Saffron"), TEXT("Azure"), TEXT("Coral"), TEXT("Emerald"), TEXT("Copper"), TEXT("Violet"), TEXT("Silver"),
+			TEXT("Tangerine"), TEXT("Navy"), TEXT("Mint"), TEXT("Garnet"), TEXT("Bronze"), TEXT("Sky"), TEXT("Plum"), TEXT("Gold"),
+			TEXT("Forest"), TEXT("Rose") };
+		static const int32 MoreNumbers[] = { 2, 4, 6, 8, 10, 11, 15, 18, 20, 21, 23, 24, 26, 27, 28, 29, 30, 33, 45, 48, 51, 60, 66, 77, 98 };
+		if (Index < UE_ARRAY_COUNT(Palette)) return Palette[Index];
+		const int32 K = Index - UE_ARRAY_COUNT(Palette);
+		const float Hue = FMath::Fmod(K * 0.618034f + 0.11f, 1.f);   // golden-ratio hue spacing
+		FLivery L;
+		L.Primary = Hsv(Hue, 0.85f, K % 3 == 2 ? 0.55f : 0.85f);
+		L.Secondary = K % 3 == 0 ? Srgb(0.96f, 0.96f, 0.96f) : K % 3 == 1 ? Srgb(0.07f, 0.07f, 0.09f) : Hsv(FMath::Fmod(Hue + 0.5f, 1.f), 0.25f, 0.95f);
+		L.Accent = Hsv(FMath::Fmod(Hue + 0.45f, 1.f), 0.9f, 0.95f);
+		L.Name = MoreNames[K % UE_ARRAY_COUNT(MoreNames)];
+		L.Number = MoreNumbers[K % UE_ARRAY_COUNT(MoreNumbers)];
+		return L;
+	}
+
+	FString LapStr(float T)
+	{
+		return FMath::IsNaN(T) ? FString(TEXT("--.--")) : FString::Printf(TEXT("%.2f"), T);
+	}
+
+	bool Pressed(APlayerController* Pc, std::initializer_list<FKey> Keys)
+	{
+		for (const FKey& K : Keys) if (Pc->WasInputKeyJustPressed(K)) return true;
+		return false;
+	}
+
+	bool Down(APlayerController* Pc, std::initializer_list<FKey> Keys)
+	{
+		for (const FKey& K : Keys) if (Pc->IsInputKeyDown(K)) return true;
+		return false;
+	}
+}
+
+bool FMenuSettings::Change(int32 Delta)
+{
+	switch (Row)
+	{
+	case 0:
+		CustomLaps = -1;
+		LapIndex = (LapIndex + Delta + 2) % 2;
+		break;
+	case 1:
+		Opponents = FMath::Clamp(Opponents + Delta, MinOpponents, MaxOpponents);
+		StartPosition = FMath::Min(StartPosition, FieldSize());
+		break;
+	case 2:
+		StartPosition = FMath::Clamp(StartPosition + Delta, 1, FieldSize());
+		break;
+	case 3:
+		PitStops = FMath::Clamp(PitStops + Delta, 0, MaxPitStops);
+		break;
+	default:
+		Downforce = FMath::Clamp(Downforce + Delta, 0, DownforceSteps);
+		break;
+	}
+	return Row == 1 || Row == 2;
+}
+
+ARacingGameMode::ARacingGameMode()
+{
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bTickEvenWhenPaused = true;
+	DefaultPawnClass = nullptr;
+	HUDClass = ARacingHUD::StaticClass();
+}
+
+APlayerController* ARacingGameMode::Pc() const
+{
+	return UGameplayStatics::GetPlayerController(GetWorld(), 0);
+}
+
+void ARacingGameMode::StartPlay()
+{
+	const TCHAR* Cmd = FCommandLine::Get();
+	bSimCheck = FParse::Param(Cmd, TEXT("SimCheck"));
+	bWallCheck = FParse::Param(Cmd, TEXT("WallCheck"));
+	if (bWallCheck)
+	{
+		// one car, alone on the track
+		bSimCheck = false;
+		Menu.Opponents = 0;
+		Menu.StartPosition = 1;
+	}
+	bAutopilot = FParse::Param(Cmd, TEXT("Autopilot"));
+	bQuickStart = FParse::Param(Cmd, TEXT("QuickStart"));
+	bShotMenu = FParse::Param(Cmd, TEXT("ShotMenu"));
+	int32 Laps = -1;
+	FParse::Value(Cmd, TEXT("Opponents="), Menu.Opponents);
+	FParse::Value(Cmd, TEXT("Start="), Menu.StartPosition);
+	FParse::Value(Cmd, TEXT("Pits="), Menu.PitStops);
+	FParse::Value(Cmd, TEXT("Downforce="), Menu.Downforce);
+	if (FParse::Value(Cmd, TEXT("Laps="), Laps) && Laps > 0) Menu.CustomLaps = Laps;
+	FParse::Value(Cmd, TEXT("Cars="), SimCars);
+	FParse::Value(Cmd, TEXT("Seconds="), CheckSeconds);
+	Menu.Opponents = FMath::Clamp(Menu.Opponents, bWallCheck ? 0 : FMenuSettings::MinOpponents, FMenuSettings::MaxOpponents);
+	Menu.StartPosition = FMath::Clamp(Menu.StartPosition, 1, Menu.FieldSize());
+	Menu.PitStops = FMath::Clamp(Menu.PitStops, 0, FMenuSettings::MaxPitStops);
+	Menu.Downforce = FMath::Clamp(Menu.Downforce, 0, FMenuSettings::DownforceSteps);
+	FString Shots;
+	if (FParse::Value(Cmd, TEXT("AutoShot="), Shots, /*bShouldStopOnSeparator*/ false))
+	{
+		TArray<FString> Parts;
+		Shots.ParseIntoArray(Parts, TEXT(","));
+		for (const FString& P : Parts) ShotTimes.Add(FCString::Atof(*P));
+		if (!bShotMenu) bQuickStart = true;
+	}
+	FString Cam;
+	bShotTCam = FParse::Value(Cmd, TEXT("ShotCam="), Cam) && Cam == TEXT("tcam");
+
+	Super::StartPlay();
+	SplashStatus = FString(LoadSteps[0]) + TEXT("...");
+	if (APlayerController* P = Pc())
+	{
+		P->SetInputMode(FInputModeGameOnly());
+		P->bShowMouseCursor = false;
+	}
+}
+
+// ------------------------------------------------------------------------------- loading
+
+void ARacingGameMode::LoadingTick(float Dt)
+{
+	// one step per frame so the splash's loading bar moves (as in RaceApp.updateLoading)
+	UWorld* World = GetWorld();
+	switch (LoadStep)
+	{
+	case 0:
+		SkyLight = SpawnEnvironment(World);
+		break;
+	case 1:
+		Track = AOvalTrack::Get(World);
+		if (!Track) Track = World->SpawnActor<AOvalTrack>();
+		break;
+	case 2:
+		if (!bSimCheck)
+		{
+			Scenery = World->SpawnActor<AScenery>();
+			Scenery->Build(Track);
+		}
+		break;
+	case 3:
+		Director = World->SpawnActor<ARaceDirector>();
+		Director->GetRacingLine();
+		MenuCam = World->SpawnActor<ACameraActor>();
+		MenuCam->GetCameraComponent()->SetFieldOfView(72.f);
+		break;
+	case 4:
+		if (bSimCheck) BuildSimCheckField(SimCars, Menu.Downforce);
+		else BuildField();
+		if (bWallCheck)
+		{
+			Watched->SetScriptedThrottle(0.f);
+			Watched->SetDrivingEnabled(false);
+		}
+		Smoke = World->SpawnActor<ATireSmoke>();
+		Smoke->SetCars(FieldCars);
+		break;
+	case 5:
+		if (!bSimCheck) Audio.Init(this);
+		break;
+	default:
+		// a few frames to compile shaders and stream textures behind the splash
+		if (++WarmupFrames == 20 && SkyLight) SkyLight->GetLightComponent()->RecaptureSky();
+		if (WarmupFrames < 45) break;
+		SplashTarget = 1.f;
+		SplashStatus = TEXT("Ready");
+		if (SplashShown < 0.999f) break;
+		SplashFade = SplashFadeTime;
+		if (bWallCheck)
+		{
+			State = ERaceState::Race;
+			StateStartTime = GetWorld()->GetRealTimeSeconds();
+			if (Pc()) Pc()->SetViewTarget(Watched);
+			return;
+		}
+		if (bSimCheck || bQuickStart)
+		{
+			EnterMenu();
+			StartRace();
+		}
+		else
+		{
+			EnterMenu();
+		}
+		return;
+	}
+	if (LoadStep < NumLoadSteps)
+	{
+		LoadStep++;
+		SplashTarget = LoadStep / (float)(NumLoadSteps + 1);
+		SplashStatus = FString(LoadSteps[FMath::Min(LoadStep, NumLoadSteps - 1)]) + TEXT("...");
+	}
+}
+
+float ARacingGameMode::GetSplashOpacity() const
+{
+	if (State == ERaceState::Loading) return 1.f;
+	return FMath::Clamp(SplashFade / SplashFadeTime, 0.f, 1.f);
+}
+
+// --------------------------------------------------------------------------------- field
+
+void ARacingGameMode::AiParams(int32 Index, float& Grip, float& Aggression)
+{
+	while (AiParamPool.Num() <= Index)
+	{
+		const float G = 1.22f + AiRandom.NextFloat() * 0.10f;
+		const float A = 0.3f + AiRandom.NextFloat() * 0.7f;
+		AiParamPool.Add(FVector2f(G, A));
+	}
+	Grip = AiParamPool[Index].X;
+	Aggression = AiParamPool[Index].Y;
+}
+
+ARaceCar* ARacingGameMode::SpawnCar(int32 Slot, int32 CarCount, int32 LiveryIndex, bool bHuman, const FString& NameOverride)
+{
+	float S, D;
+	ARaceDirector::GridSlot(Slot, CarCount, S, D);
+	const FTrackSpline& Spline = Track->GetSpline();
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	const FVector Pos = Spline.Point(S, D) * 100.0 + FVector(0, 0, 60);
+	ARaceCar* Car = GetWorld()->SpawnActor<ARaceCar>(ARaceCar::StaticClass(), Pos, Spline.Forward(S).Rotation(), Params);
+	const FLivery L = LiveryForIndex(LiveryIndex);
+	Car->SetIdentity(NameOverride.IsEmpty() ? L.Name : NameOverride, L.Number, bHuman, L.Primary, L.Secondary);
+	FieldCars.Add(Car);
+	return Car;
+}
+
+void ARacingGameMode::BuildField()
+{
+	// you plus the opponents in grid order; opponent i always has the same livery, grip and
+	// aggression (as RaceApp's pool of AI cars)
+	Director->ClearField();
+	if (APlayerController* P = Pc()) P->UnPossess();
+	for (ARaceCar* Car : FieldCars) if (Car) Car->Destroy();
+	FieldCars.Reset();
+
+	const FRacingLine* Line = Director->GetRacingLine();
+	auto MakeDriver = [Line](ARaceCar* Car, float Grip, float Aggression)
+	{
+		FCarCore& C = Car->Core();
+		const FSpeedProfile Profile(Line, C.Spec(), C.Sim->GetAero(), Grip, 13.f);
+		return MakeUnique<FAIDriver>(&C, Line, Profile, Aggression);
+	};
+	const int32 CarCount = Menu.FieldSize();
+	const int32 PlayerSlot = FMath::Clamp(Menu.StartPosition - 1, 0, Menu.Opponents);
+	int32 NextAi = 0;
+	for (int32 Slot = 0; Slot < CarCount; Slot++)
+	{
+		if (Slot == PlayerSlot)
+		{
+			ARaceCar* Car = SpawnCar(Slot, CarCount, 0, true, TEXT("YOU"));
+			Director->AddCar(Car, bAutopilot ? MakeDriver(Car, 1.3f, 0.6f) : nullptr);
+			Watched = Car;
+			continue;
+		}
+		float Grip, Aggression;
+		AiParams(NextAi, Grip, Aggression);
+		ARaceCar* Car = SpawnCar(Slot, CarCount, ++NextAi, false, FString());
+		Director->AddCar(Car, MakeDriver(Car, Grip, Aggression));
+	}
+	Director->FinishField();
+	if (Smoke) Smoke->SetCars(FieldCars);
+	if (APlayerController* P = Pc()) P->Possess(Watched);
+	Watched->SetDrivingEnabled(State == ERaceState::Race);
+	if (State != ERaceState::Race && MenuCam && Pc()) Pc()->SetViewTarget(MenuCam);
+}
+
+void ARacingGameMode::BuildSimCheckField(int32 CarCount, int32 Downforce)
+{
+	// the same field as HeadlessSimCheck with -Pplayer=ai: every car AI driven, liveries in
+	// slot order, grip and aggression drawn from Random(42) in slot order
+	CarCount = FMath::Clamp(CarCount, 2, 33);
+	const FRacingLine* Line = Director->GetRacingLine();
+	FJavaRandom Rnd(42);
+	const int32 WatchedSlot = FMath::Min(5, CarCount - 1);
+	for (int32 Slot = 0; Slot < CarCount; Slot++)
+	{
+		ARaceCar* Car = SpawnCar(Slot, CarCount, Slot, false, FString());
+		if (Slot == WatchedSlot) Car->Core().Sim->GetAero().SetDownforceLevel(Downforce / 10.f);
+		const float Grip = 1.22f + Rnd.NextFloat() * 0.10f;
+		const float Aggression = 0.3f + Rnd.NextFloat() * 0.7f;
+		FCarCore& C = Car->Core();
+		Director->AddCar(Car, MakeUnique<FAIDriver>(&C, Line, FSpeedProfile(Line, C.Spec(), C.Sim->GetAero(), Grip, 13.f), Aggression));
+		if (Slot == WatchedSlot) Watched = Car;
+	}
+	Director->FinishField();
+	if (APlayerController* P = Pc()) P->Possess(Watched);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: %d cars, %d laps, %d stops, watching %s"), CarCount, Menu.Laps(), Menu.PitStops, *Watched->Core().Name);
+}
+
+// ---------------------------------------------------------------------------- state changes
+
+void ARacingGameMode::EnterMenu()
+{
+	State = ERaceState::Menu;
+	StateStartTime = GetWorld()->GetRealTimeSeconds();
+	Director->RequestStop();
+	if (Watched) Watched->SetDrivingEnabled(false);
+	if (MenuCam && Pc()) Pc()->SetViewTarget(MenuCam);
+}
+
+void ARacingGameMode::StartRace()
+{
+	State = ERaceState::Race;
+	StateStartTime = GetWorld()->GetRealTimeSeconds();
+	if (!bSimCheck) Director->SetPlayerDownforce(Menu.Downforce / (float)FMenuSettings::DownforceSteps);
+	Director->RequestStart(Menu.Laps(), Menu.PitStops);
+	FinishedFor = 0.f;
+	if (Smoke) Smoke->Clear();
+	if (Watched)
+	{
+		Watched->SetDrivingEnabled(true);
+		if (bShotTCam) Watched->SetTCam(true);
+		if (Pc()) Pc()->SetViewTarget(Watched);
+	}
+}
+
+void ARacingGameMode::ShowResults()
+{
+	State = ERaceState::Results;
+}
+
+void ARacingGameMode::OpenConfirm()
+{
+	bConfirmOpen = true;
+	// pause: no physics steps means the race clock, cars and AI all stand still
+	if (State == ERaceState::Race) UGameplayStatics::SetGamePaused(GetWorld(), true);
+}
+
+void ARacingGameMode::CloseConfirm(bool bResume)
+{
+	bConfirmOpen = false;
+	if (bResume) UGameplayStatics::SetGamePaused(GetWorld(), false);
+}
+
+void ARacingGameMode::AcceptConfirm()
+{
+	if (State == ERaceState::Race || State == ERaceState::Results)
+	{
+		CloseConfirm(true);
+		EnterMenu();
+	}
+	else
+	{
+		FGenericPlatformMisc::RequestExit(false);
+	}
+}
+
+void ARacingGameMode::GetConfirmText(FString& Title, FString& Message, FString& EnterText, FString& EscText) const
+{
+	if (State == ERaceState::Race)
+	{
+		Title = TEXT("LEAVE THE RACE?");
+		Message = TEXT("The race will be abandoned and you go back to the menu.");
+		EnterText = TEXT("quit the race and return to the menu");
+		EscText = TEXT("return to the race");
+	}
+	else
+	{
+		Title = TEXT("QUIT THE GAME?");
+		Message = TEXT("Thanks for racing!");
+		EnterText = TEXT("quit");
+		EscText = TEXT("return to the game");
+	}
+}
+
+// --------------------------------------------------------------------------------- input
+
+void ARacingGameMode::ChangeSetting(int32 Dir)
+{
+	if (Menu.Change(Dir)) BuildField();
+}
+
+void ARacingGameMode::ToggleQuality()
+{
+	// high quality post effects (ambient occlusion, bloom, light shafts) on / off
+	bHighQuality = !bHighQuality;
+	if (APlayerController* P = Pc())
+	{
+		P->ConsoleCommand(bHighQuality ? TEXT("sg.PostProcessQuality 3") : TEXT("sg.PostProcessQuality 1"));
+		P->ConsoleCommand(bHighQuality ? TEXT("sg.ShadowQuality 3") : TEXT("sg.ShadowQuality 1"));
+	}
+}
+
+void ARacingGameMode::HandleInput(float Dt)
+{
+	APlayerController* P = Pc();
+	if (!P || State == ERaceState::Loading || SplashFade > 0.f) return;
+	// keyboard and racing wheel / gamepad: A = Enter, Start = Esc, B backs out of prompts and
+	// the results (never pauses a race by accident), the d-pad works the menu
+	const bool bEnter = Pressed(P, { EKeys::Enter, EKeys::Gamepad_FaceButton_Bottom });
+	const bool bBack = P->WasInputKeyJustPressed(EKeys::Gamepad_FaceButton_Right);
+	const bool bEsc = Pressed(P, { EKeys::Escape, EKeys::Gamepad_Special_Right })
+		|| (bBack && (bConfirmOpen || State != ERaceState::Race));
+	if (P->WasInputKeyJustPressed(EKeys::H)) bShowHelp = !bShowHelp;
+	if (P->WasInputKeyJustPressed(EKeys::G)) ToggleQuality();
+
+	if (bConfirmOpen)   // modal: only Enter / Esc
+	{
+		if (bEnter) AcceptConfirm();
+		else if (bEsc) CloseConfirm(true);
+		return;
+	}
+	if (bEsc)
+	{
+		HeldDirection = 0;
+		if (State == ERaceState::Results) EnterMenu();   // the race is over: straight back to the menu
+		else OpenConfirm();
+		return;
+	}
+	if (State == ERaceState::Menu)
+	{
+		if (Pressed(P, { EKeys::Up, EKeys::Gamepad_DPad_Up })) Menu.Row = (Menu.Row + FMenuSettings::Rows - 1) % FMenuSettings::Rows;
+		if (Pressed(P, { EKeys::Down, EKeys::Gamepad_DPad_Down })) Menu.Row = (Menu.Row + 1) % FMenuSettings::Rows;
+		const bool bLeft = Pressed(P, { EKeys::Left, EKeys::Gamepad_DPad_Left });
+		const bool bRight = Pressed(P, { EKeys::Right, EKeys::Gamepad_DPad_Right });
+		if (bLeft || bRight)
+		{
+			HeldDirection = bLeft ? -1 : 1;
+			HeldTime = RepeatTimer = 0.f;
+			ChangeSetting(HeldDirection);
+		}
+		else if (HeldDirection != 0)
+		{
+			// hold Left / Right to repeat
+			const bool bHeld = HeldDirection < 0 ? Down(P, { EKeys::Left, EKeys::Gamepad_DPad_Left }) : Down(P, { EKeys::Right, EKeys::Gamepad_DPad_Right });
+			if (!bHeld)
+			{
+				HeldDirection = 0;
+			}
+			else
+			{
+				HeldTime += FMath::Min(Dt, 0.1f);
+				if (HeldTime >= RepeatDelay)
+				{
+					RepeatTimer += FMath::Min(Dt, 0.1f);
+					while (RepeatTimer >= RepeatInterval)
+					{
+						RepeatTimer -= RepeatInterval;
+						ChangeSetting(HeldDirection);
+					}
+				}
+			}
+		}
+		if (bEnter) StartRace();
+	}
+	else if (State == ERaceState::Results)
+	{
+		if (bEnter) EnterMenu();
+	}
+}
+
+void ARacingGameMode::OrbitGrid(float Dt)
+{
+	// slow camera sweep along the field lined up on the grid, from the infield side
+	if (!MenuCam || !Track) return;
+	OrbitAngle += Dt * 0.15f;
+	const int32 Cars = FieldCars.Num();
+	float MidS, Dummy;
+	ARaceDirector::GridSlot(Cars / 2, FMath::Max(Cars, 1), MidS, Dummy);
+	const float Sweep = FMath::Sin(OrbitAngle);
+	const FTrackSpline& Spline = Track->GetSpline();
+	const FVector Eye = Spline.Point(MidS + 32.f * Sweep, -13.f + 3.f * FMath::Cos(OrbitAngle * 0.7f)) + FVector(0, 0, 4.5f);
+	const FVector Center = Spline.Point(MidS + 8.f * Sweep, 0.5f) + FVector(0, 0, 0.4f);
+	MenuCam->SetActorLocationAndRotation(Eye * 100.0, (Center - Eye).Rotation());
+}
+
+// ---------------------------------------------------------------------------------- tick
+
+void ARacingGameMode::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	const float Dt = FMath::Min(DeltaSeconds, 0.1f);
+	SplashShown += (SplashTarget - SplashShown) * FMath::Min(1.f, Dt * 12.f);
+	if (SplashTarget - SplashShown < 0.002f) SplashShown = SplashTarget;
+	if (State == ERaceState::Loading)
+	{
+		LoadingTick(Dt);
+		return;
+	}
+	if (SplashFade > 0.f) SplashFade -= Dt;
+
+	if (bWallCheck)
+	{
+		WallCheckTick();
+		return;
+	}
+	HandleInput(Dt);
+	AutomationTick();
+	if (APlayerController* P = Pc())
+	{
+		// race sound while racing and on the results screen; silent in the menu and behind a prompt
+		const bool bSound = (State == ERaceState::Race || State == ERaceState::Results) && !bConfirmOpen;
+		FVector CamPos = FVector::ZeroVector, CamLeft = FVector::LeftVector;
+		if (P->PlayerCameraManager)
+		{
+			CamPos = P->PlayerCameraManager->GetCameraLocation() / 100.0;
+			CamLeft = -P->PlayerCameraManager->GetCameraRotation().Quaternion().GetRightVector();
+		}
+		Audio.Update(Dt, Watched, FieldCars, CamPos, CamLeft, bSound);
+	}
+	if (bConfirmOpen) return;   // paused behind the prompt
+
+	if (State == ERaceState::Menu)
+	{
+		OrbitGrid(Dt);
+		return;
+	}
+	if (State == ERaceState::Race && Director && Watched)
+	{
+		const FRaceSnapshot R = Director->GetSnapshot();
+		const FRaceSnapshot::FRow* Me = R.Standings.FindByPredicate([this](const FRaceSnapshot::FRow& Row) { return Row.Name == Watched->Core().Name; });
+		if (Me && Me->bFinished && !bSimCheck)
+		{
+			FinishedFor += Dt;
+			if (FinishedFor > ResultsDelay) ShowResults();
+		}
+	}
+}
+
+// ------------------------------------------------------------------- automated checks
+
+void ARacingGameMode::AutomationTick()
+{
+	if (!bSimCheck && ShotTimes.Num() == 0) return;
+	const double RealT = GetWorld()->GetRealTimeSeconds() - StateStartTime;
+	if (bShotMenu && State == ERaceState::Menu && NextShot < ShotTimes.Num() && RealT >= ShotTimes[NextShot])
+	{
+		const FString File = FPaths::ProjectSavedDir() / TEXT("Screenshots") / FString::Printf(TEXT("autoshot_%02d.png"), NextShot);
+		FScreenshotRequest::RequestScreenshot(File, true, false);
+		NextShot++;
+		return;
+	}
+	if (bShotMenu && NextShot >= ShotTimes.Num() && RealT >= ShotTimes.Last() + 1.0)
+	{
+		FGenericPlatformMisc::RequestExit(false);
+		return;
+	}
+	if ((State != ERaceState::Race && State != ERaceState::Results) || !Watched || !Director) return;
+
+	const FCarSnapshot C = Watched->GetSnapshot();
+	const FRaceSnapshot R = Director->GetSnapshot();
+	if (C.SimTime <= 0.0 || !R.bRunning) return;
+	if (StartSimTime < 0.0) StartSimTime = C.SimTime;
+	const double T = C.SimTime - StartSimTime;
+	WatchedTop = FMath::Max(WatchedTop, C.Speed);
+
+	if (!bShotMenu && NextShot < ShotTimes.Num() && T >= ShotTimes[NextShot])
+	{
+		const FString File = FPaths::ProjectSavedDir() / TEXT("Screenshots") / FString::Printf(TEXT("autoshot_%02d.png"), NextShot);
+		FScreenshotRequest::RequestScreenshot(File, true, false);
+		UE_LOG(LogRacingSim, Display, TEXT("SimCheck: screenshot %s"), *File);
+		NextShot++;
+	}
+	if (!bSimCheck)
+	{
+		if (!bShotMenu && NextShot >= ShotTimes.Num() && T >= ShotTimes.Last() + 1.0) FGenericPlatformMisc::RequestExit(false);
+		return;
+	}
+
+	const FRaceSnapshot::FRow* Me = R.Standings.FindByPredicate([this](const FRaceSnapshot::FRow& Row) { return Row.Name == Watched->Core().Name; });
+	if (T >= NextLogTime && Me)
+	{
+		NextLogTime += T < 6.0 ? 0.5 : 5.0;
+		UE_LOG(LogRacingSim, Display, TEXT("SimCheck: t=%6.1f s=%7.1f d=%5.2f v=%6.1fmph P%d lap %d/%d race=%.1f rec=%d contacts=%d  thr %.2f brk %.2f gear %d wheels %d comZ %.2f upZ %.2f running %d"),
+			T, C.TrackS, C.TrackD, C.Speed * MphPerMs, Me->Position, Me->Lap, R.RaceLaps, R.RaceTime, R.Recoveries, ARaceCar::CarContacts.load(),
+			C.Throttle, C.Brake, C.Gear, C.Contacts, C.ComPos.Z, C.Up.Z, R.bRunning ? 1 : 0);
+	}
+	const bool bAllFinished = R.Standings.Num() > 0 && !R.Standings.ContainsByPredicate([](const FRaceSnapshot::FRow& Row) { return !Row.bFinished; });
+	if (bAllFinished && AllFinishedAt < 0.0) AllFinishedAt = T;
+	if ((AllFinishedAt >= 0.0 && T > AllFinishedAt + 1.0) || T > CheckSeconds)
+	{
+		LogClassification();
+		bSimCheck = false;
+		FGenericPlatformMisc::RequestExit(false);
+	}
+}
+
+void ARacingGameMode::LogClassification()
+{
+	const FRaceSnapshot R = Director->GetSnapshot();
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: car-car contacts %d, recoveries %d, max %s speed %.1f mph"),
+		ARaceCar::CarContacts.load(), R.Recoveries, *Watched->Core().Name, WatchedTop * MphPerMs);
+	for (const FRaceSnapshot::FRow& Row : R.Standings)
+	{
+		UE_LOG(LogRacingSim, Display, TEXT("SimCheck:   P%d %-9s laps %d pits %d %s best %s"), Row.Position, *Row.Name, Row.LapsCompleted,
+			Row.PitStops, Row.bFinished ? *FString::Printf(TEXT("FINISHED %.2fs"), Row.FinishTime) : TEXT("running"), *LapStr(Row.BestLap));
+	}
+}
+
+void ARacingGameMode::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	Super::AddReferencedObjects(InThis, Collector);
+	CastChecked<ARacingGameMode>(InThis)->Audio.AddReferencedObjects(Collector);
+}
+
+// --------------------------------------------------------------------------- wall check
+
+void ARacingGameMode::WallCheckTick()
+{
+	// Port of WallHitCheck: fires the car into the outer wall on the straight and in a banked
+	// turn, at 40 / 70 / 100 m/s, 5 / 15 / 30 degrees, nose first / sideways / backward, and
+	// reports how far it is thrown (rise of the center of mass, speed away from the surface,
+	// roll, pitch) and whether it ends up over the wall or upside down.
+	if (!Watched || !Track) return;
+	const FTrackSpline& Spl = Track->GetSpline();
+	const float Speeds[3] = { 40.f, 70.f, 100.f }, Angles[3] = { 5.f, 15.f, 30.f }, Yaws[3] = { 0.f, 90.f, 180.f };
+	const float Turn = Spl.TurnStarts()[0];
+	const float Places[2] = { Turn - 400.f, Turn + 180.f };
+	constexpr int32 Total = 2 * 3 * 3 * 3;
+	auto Decode = [&](int32 Run, float& S, float& V, float& Ang, float& Yaw, bool& bTurn)
+	{
+		Yaw = Yaws[Run % 3]; Run /= 3;
+		Ang = Angles[Run % 3]; Run /= 3;
+		V = Speeds[Run % 3]; Run /= 3;
+		S = Places[Run];
+		bTurn = Run == 1;
+	};
+	auto Launch = [&](int32 Run)
+	{
+		float S, V, Ang, Yaw;
+		bool bTurn;
+		Decode(Run, S, V, Ang, Yaw, bTurn);
+		const float D = FTrackSpline::RoadOuter - 4.5f;
+		const FVector N = Spl.SurfaceNormal(S, D);
+		const FVector Fwd = (Spl.Forward(S) - N * FVector::DotProduct(Spl.Forward(S), N)).GetSafeNormal();
+		const FVector Right = FVector::CrossProduct(N, Fwd);   // Unreal: up x forward = right
+		const float A = FMath::DegreesToRadians(Ang), H = FMath::DegreesToRadians(Ang - Yaw);
+		const FVector Dir = Fwd * FMath::Cos(A) + Right * FMath::Sin(A);       // toward the wall
+		const FVector BodyFwd = Fwd * FMath::Cos(H) + Right * FMath::Sin(H);   // yawed to the left
+		const FQuat Q = FRotationMatrix::MakeFromXZ(BodyFwd, N).ToQuat();
+		const FVector Pos = Spl.Point(S, D) + N * (Watched->Core().Spec().RideHeight() + 0.03f);
+		Watched->SetScriptedThrottle(Yaw == 0.f ? 0.3f : 0.f);
+		Watched->PlaceCustom(Pos, Q, Dir * V, Yaw == 0.f ? V : 0.f);
+	};
+	if (WallRun < 0)
+	{
+		UE_LOG(LogRacingSim, Display, TEXT("WALLCHECK place  v(m/s) angle yaw | maxRise(m) maxVup(m/s) maxRoll maxPitch  end"));
+		WallRun = 0;
+		Launch(0);
+		return;
+	}
+	const FCarSnapshot C = Watched->GetSnapshot();
+	if (C.PlacementCount <= WallSeenPlacements) return;   // the placement has not reached the physics yet
+	if (WallRunStart < 0.0)
+	{
+		WallRunStart = C.SimTime;
+		WallBase = NAN;
+		WallMaxRise = WallMaxVUp = WallMaxRoll = WallMaxPitch = 0.f;
+		bWallOver = false;
+	}
+	const FTrackSpline::FTrackPos Tp = Spl.Project(C.ComPos);
+	const float Dd = FMath::Min(Tp.D, FTrackSpline::RoadOuter);
+	const float H = C.ComPos.Z - Spl.Height(Tp.S, Dd);
+	if (FMath::IsNaN(WallBase)) WallBase = H;
+	const FVector Sn = Spl.SurfaceNormal(Tp.S, Dd);
+	WallMaxRise = FMath::Max(WallMaxRise, H - WallBase);
+	WallMaxVUp = FMath::Max(WallMaxVUp, (float)FVector::DotProduct(C.Vel, Sn));
+	WallMaxRoll = FMath::Max(WallMaxRoll, FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp((float)FVector::DotProduct(C.Up, Sn), -1.f, 1.f))));
+	WallMaxPitch = FMath::Max(WallMaxPitch, FMath::Abs(FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp((float)FVector::DotProduct(C.Fwd, Sn), -1.f, 1.f)))));
+	if (Tp.D > FTrackSpline::RoadOuter + 0.5f) bWallOver = true;
+	static int32 TraceRun = -2;
+	if (TraceRun == -2) { TraceRun = -1; FParse::Value(FCommandLine::Get(), TEXT("WallTrace="), TraceRun); }
+	static double NextTrace = 0.0;
+	if (WallRun == TraceRun && C.SimTime - WallRunStart >= NextTrace)
+	{
+		NextTrace += 0.1;
+		UE_LOG(LogRacingSim, Display, TEXT("WALLTRACE t=%.2f s=%.1f d=%.2f h=%.2f upN=%.2f fwdN=%.2f v=%.1f vUp=%.2f contacts=%d  filter calls %d pairs %d flattened %d"),
+			C.SimTime - WallRunStart, Tp.S, Tp.D, H - WallBase, FVector::DotProduct(C.Up, Sn), FVector::DotProduct(C.Fwd, Sn), C.Vel.Size(),
+			FVector::DotProduct(C.Vel, Sn), C.Contacts, FWallContactFilter::Calls.load(), FWallContactFilter::Pairs.load(), FWallContactFilter::Flattened.load());
+	}
+	if (C.SimTime - WallRunStart < 4.0) return;
+
+	float S, V, Ang, Yaw;
+	bool bTurn;
+	Decode(WallRun, S, V, Ang, Yaw, bTurn);
+	const bool bFlip = FVector::DotProduct(C.Up, Sn) < 0.f;
+	UE_LOG(LogRacingSim, Display, TEXT("WALLCHECK %-6s %5.0f %5.0f %4.0f | %8.2f %9.2f %7.0f %7.0f   %s"), bTurn ? TEXT("turn") : TEXT("str"),
+		V, Ang, Yaw, WallMaxRise, WallMaxVUp, WallMaxRoll, WallMaxPitch, bWallOver ? TEXT("OVER WALL") : bFlip ? TEXT("UPSIDE DOWN") : TEXT("ok"));
+	WallWorstRise = FMath::Max(WallWorstRise, WallMaxRise);
+	WallWorstV = FMath::Max(WallWorstV, WallMaxVUp);
+	if (bWallOver) WallOverCount++;
+	else if (bFlip) WallFlipCount++;
+	WallSeenPlacements = C.PlacementCount;
+	WallRunStart = -1.0;
+	if (++WallRun >= Total)
+	{
+		UE_LOG(LogRacingSim, Display, TEXT("WALLCHECK runs %d  worst rise %.2f m  worst upward speed %.2f m/s  over wall %d  upside down %d"),
+			Total, WallWorstRise, WallWorstV, WallOverCount, WallFlipCount);
+		bWallCheck = false;
+		FGenericPlatformMisc::RequestExit(false);
+		return;
+	}
+	Launch(WallRun);
+}

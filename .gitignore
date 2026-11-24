@@ -1,0 +1,16 @@
+# Unreal build output and caches (rebuilt by UnrealBuildTool / the editor)
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+.vs/
+*.sln
+*.VC.db
+*.opensdf
+*.sdf
+*.suo
+# packaged game (RunUAT BuildCookRun -archive)
+Package/
+*.slnx
+# cook logs
+Build/Windows/FileOpenOrder/
