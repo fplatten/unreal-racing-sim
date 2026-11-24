@@ -67,13 +67,6 @@ namespace
 		auto L = [](float X) { return X <= 0.04045f ? X / 12.92f : FMath::Pow((X + 0.055f) / 1.055f, 2.4f); };
 		return FLinearColor(L(C.R), L(C.G), L(C.B), C.A * Alpha);
 	}
-
-	/** The engine's composite Roboto (Regular, Bold, ... typefaces), cached by the font system at any size. */
-	UFont* BaseFont()
-	{
-		static UFont* Roboto = LoadObject<UFont>(nullptr, TEXT("/Engine/EngineFonts/Roboto.Roboto"));
-		return Roboto ? Roboto : (GEngine ? GEngine->GetLargeFont() : nullptr);
-	}
 }
 
 UFont* ARacingHUD::FontFor(float Size, bool bBold)
@@ -81,8 +74,8 @@ UFont* ARacingHUD::FontFor(float Size, bool bBold)
 	// Size is the Java font size (its line height in pixels at 900 lines). Scaling a small font up
 	// blurs it, so every size gets its own copy of Roboto rasterized at that pixel size: the font
 	// cache renders runtime fonts at LegacyFontSize points (96 DPI: 4/3 pixels per point).
-	UFont* Roboto = BaseFont();
-	if (!Roboto) return nullptr;
+	if (!Roboto) Roboto = LoadObject<UFont>(nullptr, TEXT("/Engine/EngineFonts/Roboto.Roboto"));
+	if (!Roboto) return GEngine ? GEngine->GetLargeFont() : nullptr;
 	const int32 Points = FMath::Clamp(FMath::RoundToInt(Size * Scale * 0.80f * 0.75f), 4, 400);
 	const int32 Key = Points * 2 + (bBold ? 1 : 0);
 	if (TObjectPtr<UFont>* Found = Fonts.Find(Key)) return *Found;
@@ -92,6 +85,7 @@ UFont* ARacingHUD::FontFor(float Size, bool bBold)
 	Fonts.Add(Key, F);
 	return F;
 }
+
 void ARacingHUD::Rect(float X, float Y, float W, float H, const FLinearColor& Color)
 {
 	const FLinearColor C = Lin(Color, Alpha);
@@ -189,7 +183,8 @@ void ARacingHUD::DrawSplash(ARacingGameMode* Gm, float Opacity)
 	// full-screen key art (dimmed), the title and a loading bar with the step being loaded
 	Alpha = Opacity;
 	Rect(0, 0, VW, VH, Black);
-	static UTexture2D* Art = LoadObject<UTexture2D>(nullptr, TEXT("/Game/Textures/UI/splash.splash"));
+	if (!SplashArt) SplashArt = LoadObject<UTexture2D>(nullptr, TEXT("/Game/Textures/UI/splash.splash"));
+	UTexture2D* Art = SplashArt;
 	if (Art && Art->GetResource())
 	{
 		const float Iw = Art->GetSizeX(), Ih = Art->GetSizeY();

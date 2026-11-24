@@ -16,7 +16,9 @@ Then run `Package\Windows\RacingSim.exe`, keeping the whole `Windows` folder tog
 
 Controls: `W`/`S` throttle and brake, `A`/`D` steer (click the mouse wheel for mouse steering), `E`/`Q` shift, `T` auto gearbox, `R` reset, `C` camera, `H` help, `G` graphics quality, `Esc` menu. An XInput racing wheel or gamepad works too.
 
-Command line: `-Opponents=7 -Start=6 -Laps=5 -Pits=0 -Downforce=0` preset the menu, `-QuickStart` skips it, `-Autopilot` lets the AI drive your car, and `-MouseSensitivity=1.5` scales mouse steering.
+Command line: `-Opponents=7 -Start=6 -Laps=5 -Pits=0 -Downforce=0` preset the menu, `-QuickStart` skips it, `-Autopilot` lets the AI drive your car, `-MouseSensitivity=1.5` scales mouse steering, and `-AudioDebug` logs the sound mixer's state once a second (in Development builds).
+
+No sound? If the log says `InitializeHardware() failed. Falling back to null device`, Windows refused the speakers: untick *Allow applications to take exclusive control of this device* in the speaker's Advanced properties, or restart the Windows Audio service.
 
 ## Build from source
 

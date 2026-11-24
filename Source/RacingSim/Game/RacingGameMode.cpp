@@ -663,6 +663,13 @@ void ARacingGameMode::Tick(float DeltaSeconds)
 			CamLeft = -P->PlayerCameraManager->GetCameraRotation().Quaternion().GetRightVector();
 		}
 		Audio.Update(Dt, Watched, FieldCars, CamPos, CamLeft, bSound);
+		static const bool bAudioDebug = FParse::Param(FCommandLine::Get(), TEXT("AudioDebug"));
+		static double NextAudioLog = 0.0;
+		if (bAudioDebug && GetWorld()->GetRealTimeSeconds() >= NextAudioLog)
+		{
+			NextAudioLog = GetWorld()->GetRealTimeSeconds() + 1.0;
+			UE_LOG(LogRacingSim, Display, TEXT("AUDIO state %d sound %d | %s"), (int32)State, bSound ? 1 : 0, *Audio.DebugState());
+		}
 	}
 	if (bConfirmOpen) return;   // paused behind the prompt
 

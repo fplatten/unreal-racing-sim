@@ -2,6 +2,9 @@
 #include "Audio/SoundSynth.h"
 #include "Car/RaceCar.h"
 #include "Components/AudioComponent.h"
+#include "AudioDevice.h"
+#include "Engine/Engine.h"
+#include "Misc/App.h"
 
 namespace
 {
@@ -101,6 +104,11 @@ int32 URaceMixWave::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples
 			}
 		}
 	}
+	float Peak = 0.f;
+	for (float M : Mix) Peak = FMath::Max(Peak, FMath::Abs(M));
+	Calls++;
+	SamplesOut += Frames * 2;
+	LastPeak = Peak;
 	OutAudio.SetNumUninitialized(Frames * 2 * sizeof(int16));
 	int16* Out = (int16*)OutAudio.GetData();
 	for (int32 i = 0; i < Frames * 2; i++)
@@ -137,6 +145,18 @@ void FRaceAudio::Init(UObject* Owner)
 	if (Actor) Component->SetupAttachment(Actor->GetRootComponent());
 	Component->RegisterComponent();
 	Component->Play();
+}
+
+FString FRaceAudio::DebugState() const
+{
+	if (!Wave) return TEXT("no wave");
+	FAudioDeviceHandle Dev = GEngine ? GEngine->GetMainAudioDevice() : FAudioDeviceHandle();
+	const FString Device = FString::Printf(TEXT(" | app volume %.2f focus %d unfocused %.2f muted %d"),
+		FApp::GetVolumeMultiplier(), FApp::HasFocus() ? 1 : 0, FApp::GetUnfocusedVolumeMultiplier(),
+		Dev ? (Dev->IsAudioDeviceMuted() ? 1 : 0) : -1);
+	return Device + FString::Printf(TEXT(" | component %s playing %d | wave calls %d samples %lld peak %.3f voices %d active %d"),
+		Component ? TEXT("ok") : TEXT("none"), Component ? (Component->IsPlaying() ? 1 : 0) : -1,
+		Wave->Calls.load(), Wave->SamplesOut.load(), Wave->LastPeak.load(), Wave->NumVoices(), Wave->IsActive() ? 1 : 0);
 }
 
 void FRaceAudio::AddReferencedObjects(FReferenceCollector& Collector)

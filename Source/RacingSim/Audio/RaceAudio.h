@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Sound/SoundWaveProcedural.h"
+#include <atomic>
 #include "RaceAudio.generated.h"
 
 class ARaceCar;
@@ -36,6 +37,13 @@ public:
 
 	virtual int32 OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples) override;
 
+	/** Diagnostics (-AudioDebug): render callbacks, samples rendered, peak output level of the last block. */
+	std::atomic<int32> Calls{ 0 };
+	std::atomic<int64> SamplesOut{ 0 };
+	std::atomic<float> LastPeak{ 0.f };
+	int32 NumVoices() { FScopeLock L(&Lock); return Voices.Num(); }
+	bool IsActive() { FScopeLock L(&Lock); return bActive; }
+
 private:
 	TArray<TArray<float>> Banks;
 	FCriticalSection Lock;
@@ -62,6 +70,7 @@ public:
 	void Update(float Dt, ARaceCar* Player, const TArray<TObjectPtr<ARaceCar>>& Field, const FVector& ListenerPos,
 		const FVector& ListenerLeft, bool bActive);
 	void AddReferencedObjects(FReferenceCollector& Collector);
+	FString DebugState() const;
 
 private:
 	TObjectPtr<URaceMixWave> Wave;

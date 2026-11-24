@@ -49,6 +49,12 @@ private:
 	float Alpha = 1.f;
 	float WheelRotation = 0.f;
 
+	/** The splash key art and the engine's Roboto: members, so garbage collection keeps them loaded. */
+	UPROPERTY()
+	TObjectPtr<class UTexture2D> SplashArt;
+	UPROPERTY()
+	TObjectPtr<class UFont> Roboto;
+
 	/** Font copies keyed by point size * 2 + bold. */
 	UPROPERTY()
 	TMap<int32, TObjectPtr<class UFont>> Fonts;
