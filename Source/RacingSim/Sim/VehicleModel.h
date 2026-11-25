@@ -51,13 +51,19 @@ struct RACINGSIM_API FVehicleSpec
 
 	// ---- Engine & gearbox ----
 	TArray<float> TorqueRpm = { 0, 2000, 4000, 6000, 8000, 10000, 11000, 12000, 12500 };
-	TArray<float> TorqueNm = { 220, 250, 340, 400, 445, 470, 470, 440, 400 };
+	/** Indy turbo V8 at speedway boost: ~870 hp at 12,000 rpm, at most ~235 mph on the straights
+	 *  without a tow (minimum wing); the tow takes it to ~243 (the Java curve x 1.17; it made
+	 *  ~740 hp and 215 mph). */
+	TArray<float> TorqueNm = { 257, 293, 397, 467, 520, 549, 549, 514, 467 };
 	float IdleRpm = 3000.f;
 	float RedlineRpm = 12000.f;
 	float LimiterRpm = 12300.f;
 	TArray<float> GearRatios = { 2.80f, 2.15f, 1.75f, 1.48f, 1.27f, 1.10f };
 	float ReverseRatio = 2.9f;
-	float FinalDrive = 3.2f;
+	/** Geared like a 1995 Indy car: the engine stays in its power band (11,000-12,000 rpm) all the
+	 *  way round (the Java 3.2 left the turns at ~9,000 rpm, 20% down on power); the limiter
+	 *  (12,300 rpm) is ~243 mph in a tow. Tuning: -FinalDrive=. */
+	float FinalDrive = 3.55f;
 	float DrivetrainEfficiency = 0.92f;
 	float ShiftTime = 0.06f;
 	float AutoUpshiftRpm = 11800.f;

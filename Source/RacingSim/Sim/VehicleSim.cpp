@@ -50,6 +50,7 @@ float FTrackSurface::Cast(const FVector& From, const FVector& Dir, float MaxDist
 FVehicleSim::FVehicleSim(const FVehicleSpec& InSpec, const FTrackSurface* InSurface)
 	: Spec(InSpec), Surface(InSurface), Gearbox(&Spec)
 {
+	FParse::Value(FCommandLine::Get(), TEXT("FinalDrive="), Spec.FinalDrive);   // tuning
 	const float Mh = Spec.MountHeight;
 	// Java mounts (+x = left) -> Unreal (+y = right)
 	Wheels[FL].MountLocal = FVector(Spec.FrontAxleX, -Spec.FrontHalfTrack, Mh);

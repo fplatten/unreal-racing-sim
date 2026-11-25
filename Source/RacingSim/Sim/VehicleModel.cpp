@@ -1,17 +1,33 @@
 #include "Sim/VehicleModel.h"
 
+namespace
+{
+	/** Tuning: -PowerScale=<x> multiplies the engine torque curve (read once). */
+	float PowerScale()
+	{
+		static float Scale = -1.f;
+		if (Scale < 0.f)
+		{
+			Scale = 1.f;
+			FParse::Value(FCommandLine::Get(), TEXT("PowerScale="), Scale);
+		}
+		return Scale;
+	}
+}
+
 float FVehicleSpec::EngineTorque(float Rpm) const
 {
-	if (Rpm <= TorqueRpm[0]) return TorqueNm[0];
+	const float K = PowerScale();
+	if (Rpm <= TorqueRpm[0]) return K * TorqueNm[0];
 	for (int32 i = 1; i < TorqueRpm.Num(); i++)
 	{
 		if (Rpm <= TorqueRpm[i])
 		{
 			const float T = (Rpm - TorqueRpm[i - 1]) / (TorqueRpm[i] - TorqueRpm[i - 1]);
-			return TorqueNm[i - 1] + T * (TorqueNm[i] - TorqueNm[i - 1]);
+			return K * (TorqueNm[i - 1] + T * (TorqueNm[i] - TorqueNm[i - 1]));
 		}
 	}
-	return TorqueNm.Last();
+	return K * TorqueNm.Last();
 }
 
 FTireModel::FResult FTireModel::Compute(float SlipAngle, float SlipRatio, float Fz, float GripScale) const
