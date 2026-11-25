@@ -174,5 +174,9 @@ private:
 	double NextLogTime = 0.0;
 	double StartSimTime = -1.0;
 	float WatchedTop = 0.f;
+	TArray<FString> LastTop3, PendingTop3;
+	double PendingSince = 0.0;
+	int32 LeadChanges = 0, Top3Changes = 0;
+	double NextFrontLog = 0.0;
 	double AllFinishedAt = -1.0;
 };

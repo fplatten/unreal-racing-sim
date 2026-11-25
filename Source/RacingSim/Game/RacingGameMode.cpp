@@ -365,7 +365,7 @@ void ARacingGameMode::AiParams(int32 Index, float& Grip, float& Aggression)
 	while (AiParamPool.Num() <= Index)
 	{
 		const float G = 1.22f + AiRandom.NextFloat() * 0.10f;
-		const float A = 0.3f + AiRandom.NextFloat() * 0.7f;
+		const float A = AiRandom.NextFloat();   // driver type: 0 rookie .. 1 veteran
 		AiParamPool.Add(FVector2f(G, A));
 	}
 	Grip = AiParamPool[Index].X;
@@ -434,13 +434,18 @@ void ARacingGameMode::BuildSimCheckField(int32 CarCount, int32 Downforce)
 	CarCount = FMath::Clamp(CarCount, 2, 33);
 	const FRacingLine* Line = Director->GetRacingLine();
 	FJavaRandom Rnd(42);
+	FAIDriver::Stats = FAIDriver::FStats();
+	// tuning: -AiGrip=<lowest planned grip> -AiGripSpread=<range above it>
+	float GripBase = 1.22f, GripSpread = 0.10f;
+	FParse::Value(FCommandLine::Get(), TEXT("AiGrip="), GripBase);
+	FParse::Value(FCommandLine::Get(), TEXT("AiGripSpread="), GripSpread);
 	const int32 WatchedSlot = FMath::Min(5, CarCount - 1);
 	for (int32 Slot = 0; Slot < CarCount; Slot++)
 	{
 		ARaceCar* Car = SpawnCar(Slot, CarCount, Slot, false, FString());
 		if (Slot == WatchedSlot) Car->Core().Sim->GetAero().SetDownforceLevel(Downforce / 10.f);
-		const float Grip = 1.22f + Rnd.NextFloat() * 0.10f;
-		const float Aggression = 0.3f + Rnd.NextFloat() * 0.7f;
+		const float Grip = GripBase + Rnd.NextFloat() * GripSpread;
+		const float Aggression = Rnd.NextFloat();   // driver type: 0 rookie .. 1 veteran
 		FCarCore& C = Car->Core();
 		Director->AddCar(Car, MakeUnique<FAIDriver>(&C, Line, FSpeedProfile(Line, C.Spec(), C.Sim->GetAero(), Grip, 13.f), Aggression));
 		if (Slot == WatchedSlot) Watched = Car;
@@ -716,6 +721,38 @@ void ARacingGameMode::AutomationTick()
 	if (StartSimTime < 0.0) StartSimTime = C.SimTime;
 	const double T = C.SimTime - StartSimTime;
 	WatchedTop = FMath::Max(WatchedTop, C.Speed);
+	// the gaps at the front (SimCheck)
+	if (bSimCheck && R.Standings.Num() >= 3 && T >= NextFrontLog)
+	{
+		NextFrontLog = T + (R.RaceTime < 100.f ? 5.0 : 15.0);
+		const TArray<FRaceSnapshot::FRow>& St = R.Standings;
+		UE_LOG(LogRacingSim, Display, TEXT("SimCheck: front t=%.0f  P1 %s  %.0f m  P2 %s  %.0f m  P3 %s"), T,
+			*St[0].Name, St[0].TotalDistance - St[1].TotalDistance, *St[1].Name, St[1].TotalDistance - St[2].TotalDistance, *St[2].Name);
+	}
+	// racing at the front: lead changes and changes in the top 3, once the start has settled
+	if (bSimCheck && R.RaceTime > 100.f && R.Standings.Num() >= 3)
+	{
+		// a change counts once the new order has held for 3 s (cars side by side swap back and forth)
+		TArray<FString> Top3;
+		for (int32 i = 0; i < 3; i++) Top3.Add(R.Standings[i].bFinished ? FString() : R.Standings[i].Name);
+		if (!Top3.Contains(FString()))
+		{
+			if (Top3 != PendingTop3)
+			{
+				PendingTop3 = Top3;
+				PendingSince = T;
+			}
+			else if (T - PendingSince >= 3.0 && Top3 != LastTop3)
+			{
+				if (LastTop3.Num() == 3)
+				{
+					if (Top3[0] != LastTop3[0]) LeadChanges++;
+					Top3Changes++;
+				}
+				LastTop3 = Top3;
+			}
+		}
+	}
 
 	if (!bShotMenu && NextShot < ShotTimes.Num() && T >= ShotTimes[NextShot])
 	{
@@ -753,11 +790,46 @@ void ARacingGameMode::LogClassification()
 	const FRaceSnapshot R = Director->GetSnapshot();
 	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: car-car contacts %d, recoveries %d, max %s speed %.1f mph"),
 		ARaceCar::CarContacts.load(), R.Recoveries, *Watched->Core().Name, WatchedTop * MphPerMs);
+	float BestSum = 0.f, Fastest = TNumericLimits<float>::Max();
+	int32 BestCount = 0;
 	for (const FRaceSnapshot::FRow& Row : R.Standings)
 	{
 		UE_LOG(LogRacingSim, Display, TEXT("SimCheck:   P%d %-9s laps %d pits %d %s best %s"), Row.Position, *Row.Name, Row.LapsCompleted,
 			Row.PitStops, Row.bFinished ? *FString::Printf(TEXT("FINISHED %.2fs"), Row.FinishTime) : TEXT("running"), *LapStr(Row.BestLap));
+		if (!FMath::IsNaN(Row.BestLap))
+		{
+			BestSum += Row.BestLap;
+			BestCount++;
+			Fastest = FMath::Min(Fastest, Row.BestLap);
+		}
 	}
+	const FAIDriver::FStats& A = FAIDriver::Stats;
+	const double Ticks = FMath::Max<double>(A.RacingTicks, 1.0);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI pace: fastest lap %s, average best lap %s, top speed with no tow %.1f mph"),
+		*LapStr(BestCount ? Fastest : NAN), *LapStr(BestCount ? BestSum / BestCount : NAN), A.CleanAirTop * MphPerMs);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI racecraft: off line %.1f%%, 3-wide %.2f%% | passes started %d (%d from the draft), completed %d (%d from the draft), aborted %d | emergency moves %d"),
+		100.0 * A.OffLineTicks / Ticks, 100.0 * A.ThreeWideTicks / Ticks, A.PassStarts, A.DraftPassStarts, A.PassesDone, A.DraftPassesDone,
+		A.PassesAborted, A.EmergencyMoves);
+	const double St = FMath::Max<double>(A.StraightTicks, 1.0);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI held back on the straights: following %.1f%%, setting up a run %.1f%%, draft run %.1f%%, backing out %.1f%%, squeezed %.1f%%"),
+		100.0 * A.StraightCapped[0] / St, 100.0 * A.StraightCapped[1] / St, 100.0 * A.StraightCapped[2] / St, 100.0 * A.StraightCapped[3] / St, 100.0 * A.StraightCapped[4] / St);
+	const double Tu = FMath::Max<double>(A.TurnTicks, 1.0);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI held back in the turns: following %.1f%%, setting up a run %.1f%%, draft run %.1f%%, backing out %.1f%%, squeezed %.1f%%"),
+		100.0 * A.TurnCapped[0] / Tu, 100.0 * A.TurnCapped[1] / Tu, 100.0 * A.TurnCapped[2] / Tu, 100.0 * A.TurnCapped[3] / Tu, 100.0 * A.TurnCapped[4] / Tu);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI passes completed: rookies %d (%d finished inside a turn), regulars %d (%d), veterans %d (%d)"),
+		A.PassesByType[0], A.TightPassesByType[0], A.PassesByType[1], A.TightPassesByType[1], A.PassesByType[2], A.TightPassesByType[2]);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI hard braking in the turns (car-seconds): speed profile %.1f, following %.1f, draft run %.1f, backing out %.1f, squeezed %.1f"),
+		A.TurnBrakeTicks[0] / 240.0, A.TurnBrakeTicks[1] / 240.0, A.TurnBrakeTicks[3] / 240.0, A.TurnBrakeTicks[4] / 240.0, A.TurnBrakeTicks[5] / 240.0);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: racing at the front after 100 s: %d lead changes, %d top-3 changes"), LeadChanges, Top3Changes);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI 3-wide after 100 s: %.2f%%"), 100.0 * A.LateThreeWide / FMath::Max<double>(A.LateTicks, 1.0));
+	const double Off = FMath::Max<double>(A.OffLineTicks, 1.0);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI off-line causes: passing %.0f%%, emergency %.0f%%, avoiding %.0f%%, waiting to merge %.0f%%, returning %.0f%%, steering error %.0f%%"),
+		100.0 * A.OffPassing / Off, 100.0 * A.OffEmergency / Off, 100.0 * A.OffAvoiding / Off, 100.0 * A.OffHolding / Off, 100.0 * A.OffReturning / Off, 100.0 * A.OffTracking / Off);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI passing: closing speed at pull-out %.1f m/s; abandoned: not gaining %d, too late for the turn %d, yielded on the outside %d, lane closed %d"),
+		A.PassStarts ? A.ClosingAtStart / A.PassStarts : 0.0, A.AbortStall, A.AbortLate, A.AbortYield, A.AbortBlocked);
+	FString Err;
+	for (int32 i = 0; i < 96; i++) if (A.TrackErrCount[i]) Err += FString::Printf(TEXT(" %d:%+.1f"), i * 50, A.TrackErrSum[i] / A.TrackErrCount[i]);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI line error by s:%s"), *Err);
 }
 
 void ARacingGameMode::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)

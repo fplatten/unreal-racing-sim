@@ -10,8 +10,15 @@ namespace
 	constexpr float Overlap = 2.4f;
 	/** Deceleration assumed when planning how fast we may close on a car ahead (m/s^2). */
 	constexpr float FollowDecel = 3.0f;
-	constexpr float HumanFollowDecel = 2.5f, HumanFollowGap = 20.f;
-	constexpr float EmergencyTtc = 2.5f;
+	/** The human player is less predictable: plan gentler braking and keep a little more room,
+	 *  but stay close enough (15 m) to draft them. */
+	constexpr float HumanFollowDecel = 2.5f, HumanFollowGap = 15.f;
+	/** Swerve only when a hit is this close and braking would need more than EmergencyDecel. */
+	constexpr float EmergencyTtc = 1.5f;
+	constexpr float EmergencyDecel = 8.f;
+	/** Tow (drag reduction) at which a follower starts setting up a slingshot pass. */
+	constexpr float DraftForPass = 0.12f;
+
 	constexpr float LaneRate = 2.2f;
 	constexpr float WeightRate = 0.9f;
 	/** Like a real rolling start, the field holds station until it has strung out. */
@@ -19,7 +26,50 @@ namespace
 	/** End of turn 2 relative to the start/finish line (where the opening-lap formation ends). */
 	constexpr float Turn2ExitRel = FTrackSpline::Straight / 2 + 2 * FTrackSpline::Turn + FTrackSpline::Chute + 40.f;
 	constexpr float CurvatureGain = 18.f;
-	constexpr float LateralGain = 0.0025f, LateralDamping = 0.006f;
+	float LateralGain = 0.0025f, LateralDamping = 0.006f;
+	float LookBase = 8.f, LookPerSpeed = 0.40f;
+	/** Closing speed (m/s) the tow must have built before pulling out to pass. */
+	float SlingshotClosing = 2.5f;
+	/** A pass not yet alongside is given up after 1.5 s gaining less than this (m/s): only when
+	 *  it is losing ground; a slow pass may run on down the straight. */
+	float StallGain = 0.f;
+	/** Pull-out distance behind the car being passed: base + 8 m x aggression. */
+	float PullOutBase = 12.f;
+	/** Following distance (m) on a draft run, closing up to slingshot past (+2 m behind the human). */
+	float DraftRunGap = 7.f;
+	/** Following distance (m) through the turns while setting up a run, less 4 m x aggression; at or
+	 *  under the usual following distance it does nothing. Off: hanging back cost the whole train
+	 *  its exit speed and let the leader escape. */
+	float SetupGap = 0.f;
+	/** Braking (m/s^2) planned behind the car we are running up on / passing (the brakes manage ~13). */
+	float RunDecel = 6.f, PassDecel = 8.f;
+	/** On a run, pull out once within DraftRunGap + this (m) with any closing speed. */
+	float RunPullOut = 1.5f;
+	/** Closing speed (m/s) assumed for a pass from the tow when judging if it fits before the turn. */
+	float RoomClosing = 3.f;
+	/** Corner speed given up per unit of draft factor (dirty air). */
+	float DirtyAirSlowdown = 0.08f;
+	/** Tuning overrides (-AiLatGain= -AiLatDamp= -AiLookBase= -AiLookK=), read once. */
+	void ReadTuning()
+	{
+		static bool bRead = false;
+		if (bRead) return;
+		bRead = true;
+		const TCHAR* Cmd = FCommandLine::Get();
+		FParse::Value(Cmd, TEXT("AiLatGain="), LateralGain);
+		FParse::Value(Cmd, TEXT("AiLatDamp="), LateralDamping);
+		FParse::Value(Cmd, TEXT("AiLookBase="), LookBase);
+		FParse::Value(Cmd, TEXT("AiLookK="), LookPerSpeed);
+		FParse::Value(Cmd, TEXT("AiSling="), SlingshotClosing);
+		FParse::Value(Cmd, TEXT("AiStallGain="), StallGain);
+		FParse::Value(Cmd, TEXT("AiPullOut="), PullOutBase);
+		FParse::Value(Cmd, TEXT("AiDirtyAir="), DirtyAirSlowdown);
+		FParse::Value(Cmd, TEXT("AiRunGap="), DraftRunGap);
+		FParse::Value(Cmd, TEXT("AiSetupGap="), SetupGap);
+		FParse::Value(Cmd, TEXT("AiRunPull="), RunPullOut);
+		FParse::Value(Cmd, TEXT("AiRunDecel="), RunDecel);
+		FParse::Value(Cmd, TEXT("AiRoomClose="), RoomClosing);
+	}
 
 	// pit path
 	constexpr float EntryD = -12.3f, FastD = -21.9f, BoxD = -28.5f;
@@ -32,9 +82,40 @@ namespace
 	float Lerp(float T, float A, float B) { return A + (B - A) * T; }   // jME interpolateLinear(t, a, b)
 }
 
+FAIDriver::FStats FAIDriver::Stats;
+
 FAIDriver::FAIDriver(FCarCore* InCar, const FRacingLine* InLine, const FSpeedProfile& InProfile, float InAggression)
-	: Car(InCar), Track(&InLine->GetTrack()), Line(InLine), Profile(InProfile), Aggression(InAggression)
+	: Car(InCar), Track(&InLine->GetTrack()), Line(InLine), Profile(InProfile), Aggression(FMath::Clamp(InAggression, 0.f, 1.f))
 {
+	ReadTuning();
+	// Rookie (0): textbook passes only, from the tow with plenty of closing speed and done well
+	// before the turn, given up as soon as they stall. Veteran (1): pulls out with less, will
+	// pass in the short chutes and into the turns and go side by side through them.
+	const float A = Aggression;
+	SlingClosing = SlingshotClosing + (0.5f - A) * 2.f;   // 3.5 .. 1.5 m/s
+	RoomMargin = 120.f - 80.f * A;                          // 120 .. 40 m
+	YieldDs = -6.f + 6.f * A;                               // well clear .. merely alongside
+	StallLimit = StallGain + 0.4f * (1.f - A);              // 0.4 .. 0 m/s
+	RunGap = DraftRunGap + 2.f * (1.f - A);                 // 9 .. 7 m
+	bTurnPasser = A >= 0.67f;
+}
+
+int32 FAIDriver::PreferredWing(int32 Steps, int32 Jitter) const
+{
+	// rookies run more wing (stable, slower), veterans less (fast, loose): 5 .. 1 of 10, +-1. (A
+	// rookie on 8-9 was ~1.5 s a lap off the pace: a full field swarmed them, three wide.)
+	return FMath::Clamp(FMath::RoundToInt((0.5f - 0.4f * Aggression) * Steps) + Jitter, 0, Steps);
+}
+
+float FAIDriver::TurnExitDistance(float S) const
+{
+	// distance to the exit of the turn we are in, or else of the next one
+	for (float Start : Track->TurnStarts())
+	{
+		const float Into = FTrackSpline::DeltaS(Start, S);
+		if (Into >= 0.f && Into < FTrackSpline::Turn) return FTrackSpline::Turn - Into;
+	}
+	return Track->DistanceToNextTurn(S) + FTrackSpline::Turn;
 }
 
 void FAIDriver::SetDownforceLevel(float Level)
@@ -57,6 +138,8 @@ void FAIDriver::ResetLane()
 {
 	PassTarget = nullptr;
 	bPassYield = false;
+	PassCooldown = 0.f;
+	PassStall = 0.f;
 	LaneD = Car->TrackD();
 	LaneWeight = 1.f;
 	StuckTime = 0.f;
@@ -65,7 +148,18 @@ void FAIDriver::ResetLane()
 	PitPhase = EPitPhase::None;
 }
 
-bool FAIDriver::RacingLineClear(const TArray<FCarCore*>& Field, float S, float D) const
+bool FAIDriver::HasCompany(const FCarCore* Other, const TArray<FCarCore*>& Field) const
+{
+	// someone alongside that car already: passing it now would make it three wide
+	for (const FCarCore* C : Field)
+	{
+		if (C == Car || C == Other || C->TrackD() < DMin - 1.5f) continue;
+		if (FMath::Abs(FTrackSpline::DeltaS(Other->TrackS(), C->TrackS())) < 9.f) return true;
+	}
+	return false;
+}
+
+bool FAIDriver::RacingLineClear(const TArray<FCarCore*>& Field, float S, float D, float Behind, float Ahead) const
 {
 	const float LineD = Line->Offset(S);
 	if (FMath::Abs(D - LineD) < 1.2f) return true;             // already on the line
@@ -73,7 +167,7 @@ bool FAIDriver::RacingLineClear(const TArray<FCarCore*>& Field, float S, float D
 	{
 		if (C == Car) continue;
 		const float Ds = FTrackSpline::DeltaS(S, C->TrackS());
-		if (Ds <= -30.f || Ds >= 40.f || FMath::Abs(C->TrackD() - D) <= 1.2f) continue;   // own lane: fine
+		if (Ds <= -Behind || Ds >= Ahead || FMath::Abs(C->TrackD() - D) <= 1.2f) continue;   // own lane: fine
 		// anything on the line, or in the corridor we would cross to reach it, blocks the merge
 		const float Lo = FMath::Min(D, LineD) - 1.8f, Hi = FMath::Max(D, LineD) + 1.8f;
 		if (C->TrackD() > Lo && C->TrackD() < Hi) return false;
@@ -109,11 +203,19 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 	float DesiredLane = Line->Offset(S);
 	float WeightTarget = 0.f;
 	float SpeedCap = TNumericLimits<float>::Max();
+	int32 CapCause = -1;   // statistics: 0 following, 1 setting up a run, 2 draft run, 3 backing out, 4 squeezed
 	// Rolling start, Indianapolis style: hold the grid lane (three abreast) through the green
 	// flag and turns 1 and 2; the field races freely from the back straight onwards.
 	const float RelS = PitLane::Rel(S);
-	if (RaceTime > 3.f && RelS > Turn2ExitRel && RelS < Turn2ExitRel + 400.f) bReadyToRelease = true;
-	if (!bFormationDone && (RaceTime > 70.f || (bReadyToRelease && RacingLineClear(Field, S, D)))) bFormationDone = true;
+	if (!bReadyToRelease && RaceTime > 3.f && RelS > Turn2ExitRel && RelS < Turn2ExitRel + 400.f)
+	{
+		bReadyToRelease = true;
+		ReleaseTime = RaceTime;
+	}
+	// Past turn 2 the whole field races, still in its lanes until each car can merge into line
+	// (the pole sitter used to escape while the rows beside and behind it waited at formation
+	// pace); 20 s after that everyone is racing.
+	if (!bFormationDone && (RaceTime > 70.f || (bReadyToRelease && (RacingLineClear(Field, S, D) || RaceTime > ReleaseTime + 20.f)))) bFormationDone = true;
 	if (!bFormationDone)
 	{
 		DesiredLane = GridLane;
@@ -134,30 +236,58 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		}
 	}
 
-	// start a pass when closing on a slower car or riding its draft
+	// Passing, oval style: run nose to tail on the racing line, build speed in the leader's tow,
+	// then pull out late and slingshot by on the straight. A pass starts only where it can be
+	// finished before the next turn, never beside a car that already has company (no three
+	// wide), and a car that is simply faster may go by without a tow.
 	RaceTime += Dt;
-	const bool bPassingAllowed = bFormationDone && !bMergeHold && RaceTime > NoPassingTime;
-	if (bPassingAllowed && !PassTarget && Blocker && BlockerGap < 30.f + 15.f * Aggression)
+	PassCooldown = FMath::Max(0.f, PassCooldown - Dt);
+	const bool bPassingAllowed = bFormationDone && !bMergeHold && RaceTime > NoPassingTime && PassCooldown <= 0.f;
+	const FCarCore* DraftRunTarget = nullptr;
+	const FCarCore* SetupTarget = nullptr;
+	// Every driver wants the place ahead. Through the turns, hang back a little (out of the dirty
+	// air, still in the tow) to get a run at the car ahead on the next straight.
+	if (bPassingAllowed && !PassTarget && Blocker && BlockerGap < 40.f && Track->InTurn(S)) SetupTarget = Blocker;
+	// (veterans will also start one on the exit of a turn)
+	const bool bTurnExit = Track->InTurn(S) && TurnExitDistance(S) < FTrackSpline::Turn / 2.f;
+	if (bPassingAllowed && !PassTarget && Blocker && (!Track->InTurn(S) || (bTurnPasser && bTurnExit)))
 	{
+		const float Closing = V - Blocker->ForwardSpeed();
+		const bool bTowing = Car->GetDraftFactor() > DraftForPass;
+		// pull out late, from the tow, once the run has built real closing speed: out of the tow
+		// that speed fades within seconds (12-20 m back; the human gets more room). Right on its
+		// gearbox, any closing speed will do.
+		const float PullOut = PullOutBase + (Blocker->bPlayer ? 4.f : 0.f) + 8.f * Aggression;
+		const bool bSlingshot = bTowing && ((BlockerGap < PullOut && Closing > SlingClosing)
+			|| (BlockerGap < RunGap + RunPullOut && Closing > 0.5f));
 		// a pass on the human player needs a clear speed advantage, not just a tow
-		const bool bClosing = V > Blocker->ForwardSpeed() + (Blocker->bPlayer ? 1.5f : 0.3f);
-		const bool bTowing = Car->GetDraftFactor() > 0.12f;
-		// only start a pass that will be done before the next turn
-		bool bRoom = true;
-		if (!Track->InTurn(S))
+		const bool bFaster = BlockerGap < 30.f && Closing > (Blocker->bPlayer ? 2.5f : 1.5f);
+		// Only start a pass that will be done in time (a run from the tow arrives at around
+		// 3 m/s): before the next turn, with a margin a rookie makes generous; a veteran will
+		// carry it side by side through the next turn instead (the short chutes, the turns).
+		const float ClosingSpeed = FMath::Max(Closing, bTowing ? RoomClosing : 0.3f);
+		const float PassDistance = (BlockerGap + 10.f) / ClosingSpeed * FMath::Max(V, 1.f);
+		const float RoomLeft = bTurnPasser ? TurnExitDistance(S) - 40.f
+			: (Track->InTurn(S) ? 0.f : Track->DistanceToNextTurn(S) - RoomMargin);
+		const bool bRoom = PassDistance < RoomLeft;
+		const float Lane = (bRoom && !HasCompany(Blocker, Field)) ? ChoosePassLane(Blocker, Field) : NAN;
+		if (!FMath::IsNaN(Lane))
 		{
-			const float ClosingSpeed = FMath::Max(V - Blocker->ForwardSpeed(), bTowing ? 3.f : 0.3f);
-			const float PassDistance = (BlockerGap + 10.f) / ClosingSpeed * FMath::Max(V, 1.f);
-			bRoom = PassDistance < Track->DistanceToNextTurn(S) - 40.f;
-		}
-		if ((bClosing || bTowing) && bRoom)
-		{
-			const float Lane = ChoosePassLane(Blocker, Field);
-			if (!FMath::IsNaN(Lane))
+			// A pass is on, but sitting at the usual following distance the tow builds no speed:
+			// close right up in it (a "run"), and the slingshot follows once we are closing.
+			if (bTowing && !bSlingshot && !bFaster && !Track->InTurn(S)) DraftRunTarget = Blocker;
+			else if (bSlingshot || bFaster)
 			{
 				PassTarget = Blocker;
 				bPassYield = false;
 				PassLane = Lane;
+				bPassFromDraft = bTowing;
+				bEmergencyMove = false;
+				// a pass begun in a turn or with less than a long straight's worth of road left
+				bPassTight = Track->InTurn(S) || Track->DistanceToNextTurn(S) < 300.f;
+				Stats.PassStarts++;
+				Stats.ClosingAtStart += Closing;
+				if (bTowing) Stats.DraftPassStarts++;
 			}
 		}
 	}
@@ -166,25 +296,80 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		const float Ds = FTrackSpline::DeltaS(S, PassTarget->TrackS());
 		const bool bOutside = PassLane > PassTarget->TrackD();
 		const bool bTurnNear = Track->InTurn(S) || Track->DistanceToNextTurn(S) < 80.f;
-		// still not ahead on the outside as the turn arrives: back out and tuck in behind
-		if (bOutside && bTurnNear && Ds > -3.f) bPassYield = true;
-		if (Ds < -8.f || Ds > 70.f || (bPassYield && Ds > 10.f) || LaneBlocked(PassLane, PassTarget, Field, -6.f, 8.f))
+		// not far enough ahead on the outside as the turn arrives (a rookie wants to be well clear,
+		// a veteran stays out there once alongside): back out and tuck in behind
+		// A rookie does not go side by side into a turn on either side: clear ahead, or back out.
+		const bool bRookie = Aggression < 0.34f;
+		if (!bEmergencyMove && (bOutside || bRookie) && bTurnNear && Ds > YieldDs) bPassYield = true;
+		// an avoiding move ends once we have dropped back behind that car (or cleared it)
+		const bool bAvoided = bEmergencyMove && Ds > 6.f && V < PassTarget->ForwardSpeed();
+		// not alongside yet as the turn arrives: no dive-bomb on the inside, from anyone (a veteran
+		// alongside by then may carry the pass side by side through the turn; only a veteran
+		// keeps a pass going in a turn at all)
+		const bool bTurnAhead = !Track->InTurn(S) && Track->DistanceToNextTurn(S) < 80.f;
+		const bool bTooLate = !bEmergencyMove && Ds > 4.f && (bTurnAhead || (Track->InTurn(S) && !bTurnPasser));
+		// out of the tow and not gaining before even drawing alongside: give up and tuck back in
+		// (a rookie as soon as it stalls, a veteran only once losing ground)
+		const float Gain = V - PassTarget->ForwardSpeed();
+		PassStall = (!bEmergencyMove && Ds > 3.f && Gain < StallLimit) ? PassStall + Dt : 0.f;
+		if (Ds < -8.f || Ds > 70.f || (bPassYield && Ds > 10.f) || bTooLate || bAvoided || PassStall > 1.5f || LaneBlocked(PassLane, PassTarget, Field, -6.f, 8.f))
 		{
+			if (Ds >= -8.f) PassCooldown = 3.f;   // abandoned: settle in behind before trying again
+			if (!bEmergencyMove)
+			{
+				if (Ds < -8.f)
+				{
+					Stats.PassesDone++;
+					if (bPassFromDraft) Stats.DraftPassesDone++;
+					const int32 Type = Aggression < 0.34f ? 0 : Aggression < 0.67f ? 1 : 2;
+					Stats.PassesByType[Type]++;
+					// finished inside a turn: carried side by side through it
+					if (Track->InTurn(S)) Stats.TightPassesByType[Type]++;
+				}
+				else
+				{
+					Stats.PassesAborted++;
+					if (PassStall > 1.5f) Stats.AbortStall++;
+					else if (bTooLate) Stats.AbortLate++;
+					else if (bPassYield) Stats.AbortYield++;
+					else Stats.AbortBlocked++;
+				}
+			}
 			PassTarget = nullptr;   // completed, abandoned or the lane closed
 			bPassYield = false;
+			PassStall = 0.f;
 		}
 		else
 		{
 			DesiredLane = PassLane;
 			WeightTarget = 1.f;
-			if (bPassYield) SpeedCap = FMath::Min(SpeedCap, PassTarget->ForwardSpeed() - 2.f);
+			// backing out: lift (never more than 1.5 m/s under our speed) until it is ahead of us,
+			// rather than braking hard in the turn
+			const float YieldCap = FMath::Max(PassTarget->ForwardSpeed() - 2.f, V - 1.5f);
+			if (bPassYield && YieldCap < SpeedCap)
+			{
+				SpeedCap = YieldCap;
+				CapCause = 3;
+			}
 		}
+	}
+
+	// Back to the racing line after a pass or an avoiding move only once it is clear: never chop
+	// across a car we are alongside or have only just passed. (Merging in behind a car further up
+	// the road is fine: the following distance takes care of it.)
+	bool bHolding = false, bAvoiding = false;
+	if (!PassTarget && bFormationDone && !bMergeHold && LaneWeight > 0.05f && !RacingLineClear(Field, S, D, 8.f, 8.f))
+	{
+		bHolding = true;
+		DesiredLane = LaneD;
+		WeightTarget = 1.f;
 	}
 
 	// Never run into the back of a car that is in our path, now or in the lane we are steering
 	// into. The human player gets a much wider berth.
 	const FCarCore* Threat = nullptr;
 	float ThreatTtc = TNumericLimits<float>::Max();
+	float ThreatDecel = 0.f;
 	for (const FCarCore* C : Field)
 	{
 		if (C == Car) continue;
@@ -203,10 +388,23 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		const bool bInPath = FMath::Abs(C->TrackD() - D) < Width || FMath::Abs(C->TrackD() - LaneThere) < Width
 			|| FMath::Abs(DPred - D) < Width || FMath::Abs(DPred - LaneThere) < Width;
 		if (!bInPath) continue;
-		const float Gap = (bHuman ? HumanFollowGap : 12.f) - 3.f * Aggression;
+		// On a draft run, close right up on the car we mean to pass, planning firmer braking so the
+		// tow can build closing speed; once pulling out to pass it, that car only limits us as a
+		// collision risk (otherwise the run dies while we move across). Setting a run up in the
+		// turn: hang back.
+		const bool bPassing = C == PassTarget && !bEmergencyMove;
+		const float Gap = bPassing ? 2.f
+			: C == DraftRunTarget ? (bHuman ? RunGap + 2.f : RunGap)
+			: C == SetupTarget ? FMath::Max(SetupGap - 4.f * Aggression, bHuman ? HumanFollowGap : 12.f)
+			: (bHuman ? HumanFollowGap : 12.f) - 3.f * Aggression;
+		const float PlanDecel = bPassing ? PassDecel : C == DraftRunTarget ? RunDecel : Decel;
 		const float Margin = FMath::Max(Ds - Gap, 0.f);
-		const float Cap = Vc + FMath::Sqrt(2.f * Decel * Margin) - (bHuman ? 1.5f : 0.5f);
-		SpeedCap = FMath::Min(SpeedCap, Cap);
+		const float Cap = Vc + FMath::Sqrt(2.f * PlanDecel * Margin) - (bHuman ? 1.5f : 0.5f);
+		if (Cap < SpeedCap)
+		{
+			SpeedCap = Cap;
+			CapCause = C == SetupTarget ? 1 : C == DraftRunTarget ? 2 : 0;
+		}
 		if (Closing > 0.5f)
 		{
 			const float Ttc = FMath::Max(Ds - 5.f, 0.f) / Closing;
@@ -214,11 +412,14 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 			{
 				ThreatTtc = Ttc;
 				Threat = C;
+				ThreatDecel = Closing * Closing / (2.f * FMath::Max(Ds - 5.f, 0.5f));
 			}
 		}
 	}
-	// emergency: about to hit a car we are still lined up with -> take any free lane
-	if (Threat && ThreatTtc < EmergencyTtc && PassTarget != Threat)
+	// emergency: about to hit a car we are still lined up with, faster than braking can fix ->
+	// take any free lane. Otherwise lift and brake behind it (the speed cap above).
+	// Beside a car that already has company the only free lane makes it three wide: brake.
+	if (Threat && ThreatTtc < EmergencyTtc && ThreatDecel > EmergencyDecel && PassTarget != Threat && !HasCompany(Threat, Field))
 	{
 		const float Lane = ChoosePassLane(Threat, Field);
 		if (!FMath::IsNaN(Lane))
@@ -228,6 +429,8 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 			PassLane = Lane;
 			DesiredLane = Lane;
 			WeightTarget = 1.f;
+			bEmergencyMove = true;
+			if (bFormationDone) Stats.EmergencyMoves++;
 		}
 	}
 
@@ -240,12 +443,17 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		const float Clearance = C->bPlayer ? CarWidthClearance + 0.6f : CarWidthClearance;
 		if (FMath::Abs(Ds) < 7.5f && FMath::Abs(Dd) < Clearance + 0.4f)
 		{
+			bAvoiding = true;
 			if (Dd > 0) DesiredLane = FMath::Min(DesiredLane, C->TrackD() - Clearance);
 			else DesiredLane = FMath::Max(DesiredLane, C->TrackD() + Clearance);
 			WeightTarget = 1.f;
 			if (DesiredLane < DMin + 0.4f || DesiredLane > DMax - 0.4f)
 			{
-				SpeedCap = FMath::Min(SpeedCap, V - 1.f);   // squeezed: lift, don't brake
+				if (V - 1.f < SpeedCap)
+				{
+					SpeedCap = V - 1.f;   // squeezed: lift, don't brake
+					CapCause = 4;
+				}
 			}
 		}
 	}
@@ -260,7 +468,7 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 	LaneWeight += FMath::Clamp(WeightTarget - LaneWeight, -WeightRate * Dt, WeightRate * Dt);
 
 	// ---------------- steering: pure pursuit ----------------
-	const float Lookahead = FMath::Clamp(10.f + 0.55f * FMath::Abs(V), 12.f, 75.f);
+	const float Lookahead = FMath::Clamp(LookBase + LookPerSpeed * FMath::Abs(V), 12.f, 75.f);
 	const float SAhead = S + Lookahead;
 	const float DTarget = Lerp(LaneWeight, Line->Offset(SAhead), LaneD);
 	const float IntendedNow = Lerp(LaneWeight, Line->Offset(S), LaneD);
@@ -271,16 +479,63 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 	const bool bCornering = Track->InTurn(S) || Track->DistanceToNextTurn(S) < 150.f;
 	if (bCornering)
 	{
-		// dirty air costs front downforce, and an off-line lane is a tighter radius
-		VTarget *= 1.f - 0.25f * Car->GetDraftFactor();
+		// dirty air costs front downforce (the aero model: up to 14% front, 5% rear, about 3% of
+		// corner speed in a full tow), and an off-line lane is a tighter radius
+		VTarget *= 1.f - DirtyAirSlowdown * Car->GetDraftFactor();
 		if (LaneWeight > 0.5f) VTarget *= 0.985f;
-		if (!bFormationDone) VTarget *= 0.90f;
+		if (!bReadyToRelease) VTarget *= 0.90f;   // formation pace through turns 1 and 2
 	}
 	VTarget = FMath::Min(VTarget, SpeedCap);
 	ApplySpeed(VTarget, S, D, IntendedNow);
+	// statistics: hard braking in a turn, by what asked for it (0 the speed profile, 1+ CapCause)
+	if (bFormationDone && Track->InTurn(S) && Car->Input().Brake > 0.3f) Stats.TurnBrakeTicks[VTarget < SpeedCap - 0.01f || CapCause < 0 ? 0 : CapCause + 1]++;
 
 	// stuck detection (crashed / facing the wall)
 	if (FMath::Abs(V) < 3.f) StuckTime += Dt; else StuckTime = 0.f;
+
+	// statistics (racing laps only: the rolling start runs three abreast on purpose)
+	if (bFormationDone && !bMergeHold)
+	{
+		Stats.RacingTicks++;
+		if (Car->GetDraftFactor() < 0.01f) Stats.CleanAirTop = FMath::Max(Stats.CleanAirTop, V);
+		if (!PassTarget && !bAvoiding && !bHolding && LaneWeight <= 0.05f)
+		{
+			const int32 Bin = FMath::Clamp((int32)(FTrackSpline::WrapS(S) / 50.f), 0, 95);
+			Stats.TrackErrSum[Bin] += D - Line->Offset(S);
+			Stats.TrackErrCount[Bin]++;
+		}
+		if (FMath::Abs(D - Line->Offset(S)) > 1.5f)
+		{
+			Stats.OffLineTicks++;
+			if (PassTarget && bEmergencyMove) Stats.OffEmergency++;
+			else if (PassTarget) Stats.OffPassing++;
+			else if (bAvoiding) Stats.OffAvoiding++;
+			else if (bHolding) Stats.OffHolding++;
+			else if (LaneWeight > 0.05f) Stats.OffReturning++;
+			else Stats.OffTracking++;
+		}
+		int32 Alongside = 0;
+		for (const FCarCore* C : Field)
+		{
+			if (C != Car && FMath::Abs(FTrackSpline::DeltaS(S, C->TrackS())) < 5.f && C->TrackD() > DMin - 1.5f) Alongside++;
+		}
+		if (Alongside >= 2) Stats.ThreeWideTicks++;
+		if (!Track->InTurn(S) && Track->DistanceToNextTurn(S) > 100.f)
+		{
+			Stats.StraightTicks++;
+			if (CapCause >= 0 && SpeedCap < Profile.At(S + 4.f) - 0.5f) Stats.StraightCapped[CapCause]++;
+		}
+		else
+		{
+			Stats.TurnTicks++;
+			if (CapCause >= 0 && SpeedCap < Profile.At(S + 4.f) - 0.5f) Stats.TurnCapped[CapCause]++;
+		}
+		if (RaceTime > 100.f)
+		{
+			Stats.LateTicks++;
+			if (Alongside >= 2) Stats.LateThreeWide++;
+		}
+	}
 }
 
 void FAIDriver::Steer(float Dt, float D, float V, float SAhead, float DAhead, float IntendedNow)

@@ -28,6 +28,10 @@ struct FRaceSnapshot
 		bool bStopsMet = true;
 		float TotalDistance = 0.f;
 		float CurrentLapTime = 0.f;
+		/** AI driver type: 0 rookie, 1 regular, 2 veteran; -1 for the human player. */
+		int32 DriverType = -1;
+		/** Wing (downforce) level, 0..DownforceSteps. */
+		int32 Wing = 0;
 	};
 	/** In race order. */
 	TArray<FRow> Standings;
@@ -66,6 +70,8 @@ public:
 	static constexpr float GridRowGap = 18.f;
 	static constexpr float RollingStartSpeed = 58.f;   // m/s (~130 mph)
 	static constexpr int32 DownforceSteps = 10;
+	/** Highest wing level an AI car runs (of DownforceSteps). */
+	static constexpr int32 AiMaxDownforce = DownforceSteps;
 
 	ARaceDirector();
 

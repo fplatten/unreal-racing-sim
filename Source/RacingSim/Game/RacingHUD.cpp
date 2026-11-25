@@ -298,7 +298,7 @@ void ARacingHUD::DrawRaceHud(ARacingGameMode* Gm, const FRaceSnapshot& R, const 
 		FMath::RoundToInt(C.DownforceLevel * FMenuSettings::DownforceSteps), FMenuSettings::DownforceSteps), Base * 0.85f, Dim, Px + 16, Py + Ph - 208);
 
 	// ---- race panel (top-right) ----
-	const float Rw = 330, Rh = 400, Rx = VW - Rw - 20, Ry = VH - Rh - 20;
+	const float Rw = 400, Rh = 400, Rx = VW - Rw - 20, Ry = VH - Rh - 20;
 	Rect(Rx, Ry, Rw, Rh, Panel);
 	Text(FString::Printf(TEXT("P%d / %d"), Me.Position, R.Standings.Num()), Base * 2.6f, White, Rx + 16, Ry + Rh - 8, true);
 	FString LapText;
@@ -336,7 +336,12 @@ void ARacingHUD::DrawRaceHud(ARacingGameMode* Gm, const FRaceSnapshot& R, const 
 		if (bMe) Rect(Rx + 8, Y - LineH - 2, Rw - 16, LineH + 1, FLinearColor(0.10f, 0.32f, 0.85f, 0.75f));
 		const FString Gap = bMe ? FString(TEXT("  ----")) : FString::Printf(TEXT("%+6.2fs"), (Me.TotalDistance - E.TotalDistance) / RefSpeed);
 		Text(FString::Printf(TEXT("P%d %s %s"), E.Position, bMe ? TEXT(">") : TEXT(" "), *E.Name), Base * 0.95f, White, Rx + 16, Y);
-		Text(Gap, Base * 0.95f, White, Rx + 230, Y);
+		// driver type and wing level: rookie / regular / veteran, W0 (light) .. W10 (heavy)
+		static const TCHAR* Types[] = { TEXT("ROOKIE"), TEXT("REGULAR"), TEXT("VETERAN") };
+		static const FLinearColor TypeColors[] = { FLinearColor(0.55f, 0.85f, 1.f, 1), FLinearColor(0.80f, 0.80f, 0.80f, 1), FLinearColor(1.f, 0.62f, 0.25f, 1) };
+		if (E.DriverType >= 0) Text(Types[E.DriverType], Base * 0.75f, bMe ? White : TypeColors[E.DriverType], Rx + 158, Y - 2);
+		Text(FString::Printf(TEXT("W%d"), E.Wing), Base * 0.75f, bMe ? White : FLinearColor(0.80f, 0.80f, 0.80f, 1), Rx + 248, Y - 2);
+		Text(Gap, Base * 0.95f, White, Rx + 300, Y);
 	}
 
 	// ---- draft indicator (top-center) ----

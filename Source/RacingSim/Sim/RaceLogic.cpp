@@ -206,10 +206,8 @@ void FLapTracker::Update(int32 Index, float S)
 			E.FinishTime = RaceTime();
 		}
 	}
-	else if (NewLap < E.LapIndex)
-	{
-		E.LapIndex = NewLap;   // driving backward over the line
-	}
+	// Driving (or spinning) backward over the line leaves the lap count alone: crossing it forward
+	// again is not a new lap. (Lowering it here made that crossing a bogus few-second lap.)
 }
 
 int32 FLapTracker::Group(const FEntry& E) const

@@ -244,7 +244,18 @@ void ARaceDirector::PT_StartRace()
 		Laps.Reset(Entries[i], Field[i]->S);
 		if (Drivers[i])
 		{
-			Drivers[i]->SetDownforceLevel(SetupRandom.NextInt(DownforceSteps + 1) / (float)DownforceSteps);
+			// Each driver's own wing level: rookies run a heavy wing (stable, slower), veterans a
+			// light one (fast, loose), +-1 at random. Tuning: -AiDownforce=<0..10> gives every AI
+			// that level, -AiWingMax=<0..10> caps it.
+			static int32 WingMax = -1;
+			if (WingMax < 0) { WingMax = AiMaxDownforce; FParse::Value(FCommandLine::Get(), TEXT("AiWingMax="), WingMax); }
+			int32 Wing = FMath::Min(Drivers[i]->PreferredWing(DownforceSteps, SetupRandom.NextInt(3) - 1), FMath::Clamp(WingMax, 0, DownforceSteps));
+			int32 Forced = -1;
+			if (FParse::Value(FCommandLine::Get(), TEXT("AiDownforce="), Forced) && Forced >= 0) Wing = FMath::Min(Forced, DownforceSteps);
+			const float Level = Wing / (float)DownforceSteps;
+			Drivers[i]->SetDownforceLevel(Level);
+			UE_LOG(LogTemp, Display, TEXT("AI driver: %-9s %-7s (aggression %.2f) wing %d/%d"), *Field[i]->Name,
+				FAIDriver::TypeName(Drivers[i]->GetAggression()), Drivers[i]->GetAggression(), Wing, DownforceSteps);
 			Drivers[i]->ResetForRace();
 		}
 	}
@@ -357,6 +368,10 @@ void ARaceDirector::PT_Publish()
 		R.bStopsMet = Laps.StopsMet(E);
 		R.TotalDistance = E.TotalDistance;
 		R.CurrentLapTime = E.CurrentLapTime(Laps.GetTime());
+		const bool bAi = !E.bPlayer && Drivers.IsValidIndex(R.CarIndex) && Drivers[R.CarIndex];
+		const float A = bAi ? Drivers[R.CarIndex]->GetAggression() : 0.f;
+		R.DriverType = !bAi ? -1 : A < 0.34f ? 0 : A < 0.67f ? 1 : 2;
+		R.Wing = Field.IsValidIndex(R.CarIndex) ? FMath::RoundToInt(Field[R.CarIndex]->Sim->GetAero().DownforceLevel * DownforceSteps) : 0;
 	}
 	Snap.Now = Laps.GetTime();
 	for (int32 i = 0; i < Cars.Num(); i++)

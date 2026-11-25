@@ -45,7 +45,7 @@ UnrealEditor-Cmd.exe RacingSim.uproject /Game/Maps/Oval -game -nullrhi -nosound 
 UnrealEditor-Cmd.exe RacingSim.uproject /Game/Maps/Oval -game -nullrhi -nosound -WallCheck
 ```
 
-`-SimCheck` races an all-AI field, as the Java `gradlew simCheck -Pplayer=ai` does, and prints the lap times, contacts and classification. `-WallCheck` fires a car into the wall 54 ways, as the Java `gradlew wallCheck` does.
+`-SimCheck` races an all-AI field, as the Java `gradlew simCheck -Pplayer=ai` does, and prints the lap times, contacts and classification, plus the AI's race craft: time off the racing line (and why), time three wide, passes started, completed and abandoned, and emergency moves. Add `-Seconds=600` for longer races (the default stops after 260 s). For tuning, `-AiGrip=`, `-AiGripSpread=`, `-AiDownforce=`, `-AiWingMax=`, `-AiSling=`, `-AiStallGain=`, `-AiPullOut=`, `-AiDirtyAir=`, `-AiLookBase=`, `-AiLookK=`, `-AiLatGain=`, `-AiLatDamp=`, `-AiRunGap=`, `-AiRunDecel=`, `-AiRunPull=`, `-AiRoomClose=` and `-AiSetupGap=` override the AI's settings (see `Sim/AIDriver.cpp`), and `-PowerScale=` scales every car's engine. `-WallCheck` fires a car into the wall 54 ways, as the Java `gradlew wallCheck` does.
 
 ## Layout
 
