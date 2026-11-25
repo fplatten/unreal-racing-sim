@@ -6,6 +6,10 @@
 # each one reads right now, and the number of the last button pressed: turn the wheel, press each
 # pedal and button, and set the numbers below to match if they are wrong.
 
+# Wheels in Xbox (XInput) mode, and Xbox pads, use gamepad numbering instead: axes 0 LX, 1 LY,
+# 2 RX, 3 RY, 4 LT, 5 RT (LX steers, RT throttle, LT brake), buttons 0 A, 1 B, 2 X, 3 Y, 4 LB,
+# 5 RB, 6 Back, 7 Start (RB shifts up, LB down). The menu shows which mode the wheel is in.
+
 # Use the first controller whose name contains this text (when more than one is plugged in)
 #device=G29
 

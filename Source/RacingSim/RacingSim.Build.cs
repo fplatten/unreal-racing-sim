@@ -14,10 +14,11 @@ public class RacingSim : ModuleRules
 			"PhysicsCore", "Chaos", "ProceduralMeshComponent", "Slate", "SlateCore", "RenderCore", "RHI", "AudioExtensions"
 		});
 
-		// racing wheels and pedals (DirectInput; XInput pads go through Unreal's own input)
+		// racing wheels and pedals: DirectInput, and XInput read directly (Unreal's gamepad input has a
+		// 25% dead zone on the axis an Xbox-mode wheel steers with)
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicSystemLibraries.AddRange(new string[] { "dinput8.lib", "dxguid.lib" });
+			PublicSystemLibraries.AddRange(new string[] { "dinput8.lib", "dxguid.lib", "xinput.lib" });
 		}
 	}
 }

@@ -3,13 +3,18 @@
 #include "CoreMinimal.h"
 
 /**
- * Racing wheel and pedals over DirectInput (Logitech, Thrustmaster, Fanatec and most other
- * wheels), the port of com.racingsim.app.RacingController's raw mode. XInput devices (Xbox pads
- * and wheels in Xbox mode) are left to Unreal's own gamepad input.
+ * Racing wheel and pedals, the port of com.racingsim.app.RacingController: DirectInput wheels
+ * (Logitech, Thrustmaster, Fanatec and most others) in its raw mode, and XInput devices (Xbox pads,
+ * wheels in Xbox mode) in its gamepad mode, read directly rather than through Unreal's gamepad
+ * input, whose 25% dead zone on the left stick axis swallowed a wheel's small corrections.
  *
- * The first connected DirectInput game controller is used; it can be plugged in or out at any
- * time. Axes are numbered as GLFW (and so the Java game) numbered them: the device's axes in the
- * order X, Y, Z, Rx, Ry, Rz, Slider 0, Slider 1, skipping the ones it lacks. By default axis 0
+ * XInput (gamepad mode): axes 0 LX, 1 LY, 2 RX, 3 RY, 4 LT, 5 RT; LX steers, RT is the throttle,
+ * LT the brake; buttons 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 Back, 7 Start, 11-14 the D-pad.
+ *
+ * DirectInput (raw mode): the first connected DirectInput game controller is used, else the first
+ * XInput one; it can be plugged in or out at any time. Axes are numbered as GLFW (and so the Java
+ * game) numbered them: the device's axes in the order X, Y, Z, Rx, Ry, Rz, Slider 0, Slider 1,
+ * skipping the ones it lacks. By default axis 0
  * steers, and the pedals are the other axes that rest at one end of their travel: the first is
  * the throttle, the second the brake (Logitech: Y and Rz). A pedal's resting end is taken from
  * the first reading, so pedals that run either way round work without setup.
@@ -58,6 +63,7 @@ private:
 	FRacingController();
 	void LoadConfig();
 	bool Connect();
+	bool ConnectXInput();
 	void Disconnect();
 	void SetupForceFeedback();
 	float Pedal(float Raw, float Rest) const;

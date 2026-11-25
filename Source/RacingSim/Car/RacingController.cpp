@@ -13,6 +13,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogRacingController, Log, All);
 #include "Windows/AllowWindowsPlatformTypes.h"
 #define DIRECTINPUT_VERSION 0x0800
 #include <dinput.h>
+#include <Xinput.h>
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
@@ -20,10 +21,15 @@ namespace
 {
 	/** Axis slots in GLFW's (and so the Java game's) order. */
 	const TCHAR* AxisNames[8] = { TEXT("X"), TEXT("Y"), TEXT("Z"), TEXT("Rx"), TEXT("Ry"), TEXT("Rz"), TEXT("Slider0"), TEXT("Slider1") };
+	/** XInput (gamepad mode) axes, GLFW gamepad numbering. */
+	const TCHAR* PadAxisNames[6] = { TEXT("LX"), TEXT("LY"), TEXT("RX"), TEXT("RY"), TEXT("LT"), TEXT("RT") };
 	const TCHAR* ButtonKeys[8] = { TEXT("shiftUp"), TEXT("shiftDown"), TEXT("camera"), TEXT("auto"), TEXT("reset"), TEXT("pause"), TEXT("ok"), TEXT("back") };
 	/** Default buttons, the Java game's raw-mode set but with the shift paddles the Logitech way round
 	 *  (right paddle 4 up, left 5 down); the D-pad comes from the hat switch. */
 	const int32 DefaultButtons[(int32)FRacingController::EButton::Count] = { 4, 5, 3, 2, 6, 7, 0, 1, -1, -1, -1, -1 };
+	/** XInput defaults (GLFW gamepad numbers, as the Java game): RB up, LB down, Y camera, X auto,
+	 *  Back reset, Start pause, A ok, B back, D-pad up / down / left / right. */
+	const int32 PadButtons[(int32)FRacingController::EButton::Count] = { 5, 4, 3, 2, 6, 7, 0, 1, 11, 13, 14, 12 };
 }
 
 #if PLATFORM_WINDOWS
@@ -43,6 +49,46 @@ struct FRacingController::FImpl
 	FString FoundName;
 	FString Filter;
 	bool bFound = false;
+
+	// XInput (Xbox pads and wheels in Xbox mode), read directly: Unreal's own gamepad input has a
+	// 25% dead zone on the left stick axis, which is what such a wheel steers with
+	bool bXInput = false;
+	DWORD XSlot = 0;
+	float XAxes[6] = {};          // LX, LY, RX, RY, LT, RT, -1..1 (triggers rest at -1), as GLFW
+	bool XButtons[15] = {};       // A B X Y LB RB Back Start Guide LThumb RThumb Up Right Down Left
+
+	bool ReadXInput()
+	{
+		XINPUT_STATE St = {};
+		if (XInputGetState(XSlot, &St) != ERROR_SUCCESS) return false;
+		const XINPUT_GAMEPAD& G = St.Gamepad;
+		auto Stick = [](SHORT V) { return FMath::Clamp((V + 0.5f) / 32767.5f, -1.f, 1.f); };
+		XAxes[0] = Stick(G.sThumbLX);
+		XAxes[1] = -Stick(G.sThumbLY);   // GLFW: down is positive
+		XAxes[2] = Stick(G.sThumbRX);
+		XAxes[3] = -Stick(G.sThumbRY);
+		XAxes[4] = G.bLeftTrigger / 255.f * 2.f - 1.f;
+		XAxes[5] = G.bRightTrigger / 255.f * 2.f - 1.f;
+		const WORD Bits[15] = { XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
+			XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_START, 0,
+			XINPUT_GAMEPAD_LEFT_THUMB, XINPUT_GAMEPAD_RIGHT_THUMB, XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_RIGHT,
+			XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT };
+		for (int32 i = 0; i < 15; i++) XButtons[i] = Bits[i] && (G.wButtons & Bits[i]) != 0;
+		return true;
+	}
+
+	/** Axis by the mapping's number, whichever API the device is on. */
+	float AxisNow(int32 Index) const
+	{
+		if (bXInput) return Index >= 0 && Index < 6 ? XAxes[Index] : 0.f;
+		return Axis(Index);
+	}
+
+	bool ButtonNow(int32 Index) const
+	{
+		if (bXInput) return Index >= 0 && Index < 15 && XButtons[Index];
+		return Index >= 0 && Index < 128 && (State.rgbButtons[Index] & 0x80) != 0;
+	}
 
 	static float AxisValue(const DIJOYSTATE2& S, int32 Slot)
 	{
@@ -260,10 +306,11 @@ bool FRacingController::Connect()
 {
 #if PLATFORM_WINDOWS
 	FImpl& I = *Impl;
-	if (!I.Di) return false;
+	// a DirectInput wheel first; else an XInput device (an Xbox pad, or a wheel in Xbox mode)
+	if (!I.Di) return ConnectXInput();
 	I.bFound = false;
 	I.Di->EnumDevices(DI8DEVCLASS_GAMECTRL, &FImpl::OnDevice, &I, DIEDFL_ATTACHEDONLY);
-	if (!I.bFound || FAILED(I.Di->CreateDevice(I.Found, &I.Device, nullptr))) return false;
+	if (!I.bFound || FAILED(I.Di->CreateDevice(I.Found, &I.Device, nullptr))) return ConnectXInput();
 	if (FAILED(I.Device->SetDataFormat(&c_dfDIJoystick2)))
 	{
 		I.ReleaseDevice();
@@ -342,6 +389,47 @@ bool FRacingController::Connect()
 #endif
 }
 
+bool FRacingController::ConnectXInput()
+{
+#if PLATFORM_WINDOWS
+	FImpl& I = *Impl;
+	for (DWORD Slot = 0; Slot < XUSER_MAX_COUNT; Slot++)
+	{
+		I.XSlot = Slot;
+		if (!I.ReadXInput()) continue;
+		XINPUT_CAPABILITIES Caps = {};
+		const bool bWheel = XInputGetCapabilities(Slot, 0, &Caps) == ERROR_SUCCESS && Caps.SubType == XINPUT_DEVSUBTYPE_WHEEL;
+		Name = FString::Printf(TEXT("%s (Xbox mode, player %d)"), bWheel ? TEXT("Racing wheel") : TEXT("Controller"), (int32)Slot + 1);
+		if (!DeviceFilter.IsEmpty() && !Name.Contains(DeviceFilter, ESearchCase::IgnoreCase)) continue;
+		I.bXInput = true;
+		// GLFW gamepad mapping (as the Java game): left stick X steers, right trigger is the
+		// throttle, left trigger the brake; numbers or names (LX LY RX RY LT RT) in the settings
+		auto Resolve = [](const FString& Cfg, int32 Default) -> int32
+		{
+			if (Cfg.IsEmpty()) return Default;
+			if (Cfg.IsNumeric()) return FCString::Atoi(*Cfg);
+			for (int32 i = 0; i < 6; i++) if (Cfg.Equals(PadAxisNames[i], ESearchCase::IgnoreCase)) return i;
+			return Default;
+		};
+		SteerAxis = Resolve(SteerAxisCfg, 0);
+		ThrottleAxis = Resolve(ThrottleAxisCfg, 5);
+		BrakeAxis = Resolve(BrakeAxisCfg, 4);
+		// triggers rest at -1, sticks at 0
+		PedalRest[0] = ThrottleAxis >= 4 ? -1.f : 0.f;
+		PedalRest[1] = BrakeAxis >= 4 ? -1.f : 0.f;
+		for (int32 b = 0; b < (int32)EButton::Count; b++) ButtonIndex[b] = ButtonCfg[b] >= 0 ? ButtonCfg[b] : PadButtons[b];
+		FMemory::Memzero(Down);
+		FMemory::Memzero(Pressed);
+		bConnected = true;
+		UE_LOG(LogRacingController, Display, TEXT("Racing controller connected: '%s' (XInput, read directly, steering dead zone %.0f%%). %s"),
+			*Name, SteerDeadzone * 100.f, *Describe());
+		return true;
+	}
+	I.bXInput = false;
+#endif
+	return false;
+}
+
 void FRacingController::SetupForceFeedback()
 {
 #if PLATFORM_WINDOWS
@@ -365,6 +453,7 @@ void FRacingController::Disconnect()
 	UE_LOG(LogRacingController, Display, TEXT("Racing wheel disconnected: '%s'"), *Name);
 #if PLATFORM_WINDOWS
 	Impl->ReleaseDevice();
+	Impl->bXInput = false;
 #endif
 	bConnected = false;
 	Steer = Throttle = Brake = 0.f;
@@ -377,7 +466,7 @@ void FRacingController::Poll(float Dt)
 {
 	FMemory::Memzero(Pressed);
 #if PLATFORM_WINDOWS
-	if (!Impl || !Impl->Di) return;
+	if (!Impl) return;
 	FImpl& I = *Impl;
 	if (!bConnected)
 	{
@@ -386,54 +475,62 @@ void FRacingController::Poll(float Dt)
 		RescanTimer = 1.f;   // look for a wheel once a second
 		if (!Connect()) return;
 	}
-	HRESULT Hr = I.Device->Poll();
-	if (FAILED(Hr))
+	if (I.bXInput)
 	{
-		Hr = I.Device->Acquire();
-		// exclusive (force feedback) access is only granted while our window has focus
-		if (Hr == DIERR_OTHERAPPHASPRIO || Hr == DIERR_NOTACQUIRED) return;
-		if (Hr == DIERR_INPUTLOST || Hr == DIERR_UNPLUGGED || FAILED(Hr))
+		if (!I.ReadXInput())
 		{
 			Disconnect();
 			return;
 		}
-		if (I.bExclusive && !I.Spring) SetupForceFeedback();
-		I.Device->Poll();
 	}
-	Hr = I.Device->GetDeviceState(sizeof(DIJOYSTATE2), &I.State);
-	if (Hr == DIERR_INPUTLOST || Hr == DIERR_NOTACQUIRED)
+	else
 	{
-		I.Device->Acquire();
-		return;
-	}
-	if (FAILED(Hr))
-	{
-		Disconnect();
-		return;
+		HRESULT Hr = I.Device->Poll();
+		if (FAILED(Hr))
+		{
+			Hr = I.Device->Acquire();
+			// exclusive (force feedback) access is only granted while our window has focus
+			if (Hr == DIERR_OTHERAPPHASPRIO || Hr == DIERR_NOTACQUIRED) return;
+			if (Hr == DIERR_INPUTLOST || Hr == DIERR_UNPLUGGED || FAILED(Hr))
+			{
+				Disconnect();
+				return;
+			}
+			if (I.bExclusive && !I.Spring) SetupForceFeedback();
+			I.Device->Poll();
+		}
+		Hr = I.Device->GetDeviceState(sizeof(DIJOYSTATE2), &I.State);
+		if (Hr == DIERR_INPUTLOST || Hr == DIERR_NOTACQUIRED)
+		{
+			I.Device->Acquire();
+			return;
+		}
+		if (FAILED(Hr))
+		{
+			Disconnect();
+			return;
+		}
 	}
 
-	// DirectInput: right is positive; the car: left is positive
-	float S = -I.Axis(SteerAxis) * (bSteerInvert ? -1.f : 1.f);
+	// DirectInput and XInput (GLFW numbering): right is positive; the car: left is positive
+	float S = -I.AxisNow(SteerAxis) * (bSteerInvert ? -1.f : 1.f);
 	S = FMath::Abs(S) < SteerDeadzone ? 0.f : FMath::Sign(S) * (FMath::Abs(S) - SteerDeadzone) / (1.f - SteerDeadzone);
 	Steer = FMath::Clamp(S * SteerGain, -1.f, 1.f);
-	Throttle = Pedal(I.Axis(ThrottleAxis), PedalRest[0]);
-	Brake = Pedal(I.Axis(BrakeAxis), PedalRest[1]);
+	Throttle = Pedal(I.AxisNow(ThrottleAxis), PedalRest[0]);
+	Brake = Pedal(I.AxisNow(BrakeAxis), PedalRest[1]);
 
 	// any button going down: remembered for the menu, so the buttons can be set up
-	for (int32 i = 0; i < 128; i++)
+	const int32 NumButtons = I.bXInput ? 15 : 128;
+	for (int32 i = 0; i < NumButtons; i++)
 	{
-		const uint8 B = I.State.rgbButtons[i] & 0x80;
+		const uint8 B = I.ButtonNow(i) ? 1 : 0;
 		if (B && !RawButtons[i]) LastButton = i;
 		RawButtons[i] = B;
 	}
 	bool Now[(int32)EButton::Count] = {};
-	for (int32 b = 0; b < (int32)EButton::Count; b++)
-	{
-		const int32 Idx = ButtonIndex[b];
-		Now[b] = Idx >= 0 && Idx < 128 && (I.State.rgbButtons[Idx] & 0x80) != 0;
-	}
+	for (int32 b = 0; b < (int32)EButton::Count; b++) Now[b] = I.ButtonNow(ButtonIndex[b]);
 	// first hat switch = D-pad (hundredths of a degree clockwise from up; centered is 0xFFFF)
-	const DWORD Pov = I.State.rgdwPOV[0];
+	const DWORD Pov = I.bXInput ? 0xFFFF : I.State.rgdwPOV[0];
 	if (LOWORD(Pov) != 0xFFFF)
 	{
 		const int32 Deg = Pov / 100;
@@ -468,6 +565,7 @@ FString FRacingController::Describe() const
 #if PLATFORM_WINDOWS
 	auto AxisName = [this](int32 Index) -> FString
 	{
+		if (Impl && Impl->bXInput) return Index >= 0 && Index < 6 ? FString(PadAxisNames[Index]) : FString::Printf(TEXT("axis %d (missing)"), Index);
 		return Impl && Impl->Axes.IsValidIndex(Index) ? FString(AxisNames[Impl->Axes[Index]]) : FString::Printf(TEXT("axis %d (missing)"), Index);
 	};
 	return FString::Printf(TEXT("steer %s, throttle %s, brake %s"), *AxisName(SteerAxis), *AxisName(ThrottleAxis), *AxisName(BrakeAxis));
