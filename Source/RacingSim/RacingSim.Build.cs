@@ -13,5 +13,11 @@ public class RacingSim : ModuleRules
 			"Core", "CoreUObject", "Engine", "InputCore",
 			"PhysicsCore", "Chaos", "ProceduralMeshComponent", "Slate", "SlateCore", "RenderCore", "RHI", "AudioExtensions"
 		});
+
+		// racing wheels and pedals (DirectInput; XInput pads go through Unreal's own input)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicSystemLibraries.AddRange(new string[] { "dinput8.lib", "dxguid.lib" });
+		}
 	}
 }

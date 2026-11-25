@@ -14,7 +14,9 @@ Build the Windows game (Shipping) into `Package/`:
 
 Then run `Package\Windows\RacingSim.exe`, keeping the whole `Windows` folder together. Or open `RacingSim.uproject` in Unreal Editor 5.8 and press Play.
 
-Controls: `W`/`S` throttle and brake, `A`/`D` steer (click the mouse wheel for mouse steering), `E`/`Q` shift, `T` auto gearbox, `R` reset, `C` camera, `H` help, `G` graphics quality, `Esc` menu. An XInput racing wheel or gamepad works too.
+Controls: `W`/`S` throttle and brake, `A`/`D` steer (click the mouse wheel for mouse steering), `E`/`Q` shift, `T` auto gearbox, `R` reset, `C` camera, `H` help, `G` graphics quality, `Esc` menu.
+
+Racing wheels and pedals work out of the box: DirectInput wheels (Logitech, Thrustmaster, Fanatec and most others) and XInput devices (Xbox pads and wheels in Xbox mode). The wheel steers, the pedals are throttle and brake, the paddles shift, and the wheel's buttons and D-pad work the menus. Wheels with force feedback get a centering spring that stiffens with speed. To remap axes or buttons, invert the steering or change the force feedback, copy `controller.properties.example` to `controller.properties` next to `RacingSim.exe` and edit it; the wheel and its axes are written to the log when it connects.
 
 Command line: `-Opponents=7 -Start=6 -Laps=5 -Pits=0 -Downforce=0` preset the menu, `-QuickStart` skips it, `-Autopilot` lets the AI drive your car, `-MouseSensitivity=1.5` scales mouse steering, and `-AudioDebug` logs the sound mixer's state once a second (in Development builds).
 

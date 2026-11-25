@@ -1,4 +1,5 @@
 #include "Game/RacingHUD.h"
+#include "Car/RacingController.h"
 #include "Car/RaceCar.h"
 #include "Game/RaceDirector.h"
 #include "Game/RacingGameMode.h"
@@ -264,6 +265,19 @@ void ARacingHUD::DrawMenu(ARacingGameMode* Gm)
 	Centered(TEXT("T auto gearbox   R reset to start line   C camera   G graphics quality   H help   Esc quit game"), Base * 0.85f, MenuDim, VW / 2, Py + 87);
 	Centered(TEXT("Pit stops: stop in your yellow box (pit lane off turn 4) and stay put for the 8 s countdown."), Base * 0.85f, MenuDim, VW / 2, Py + 59);
 	Centered(TEXT("Race in the draft: tuck in behind a car to cut drag and slingshot past."), Base * 0.85f, MenuDim, VW / 2, Py + 31);
+
+	// racing wheel: what is connected and what it reads, so the axes and buttons can be checked
+	// and set up (controller.properties next to RacingSim.exe)
+	const FRacingController& Wheel = FRacingController::Get();
+	if (Wheel.IsConnected())
+	{
+		Rect(Px, Py - 78, Pw, 70, MenuPanel);
+		Centered(FString::Printf(TEXT("WHEEL  %s  -  %s"), *Wheel.GetName(), *Wheel.Describe()), Base * 0.8f, White, VW / 2, Py - 14);
+		const int32 Last = Wheel.GetLastButton();
+		Centered(FString::Printf(TEXT("steer %d%%    throttle %d%%    brake %d%%    last button pressed: %s"),
+			FMath::RoundToInt(-Wheel.GetSteer() * 100.f), FMath::RoundToInt(Wheel.GetThrottle() * 100.f), FMath::RoundToInt(Wheel.GetBrake() * 100.f),
+			Last >= 0 ? *FString::FromInt(Last) : TEXT("-")), Base * 0.8f, MenuDim, VW / 2, Py - 44);
+	}
 }
 
 // ------------------------------------------------------------------------------ race HUD

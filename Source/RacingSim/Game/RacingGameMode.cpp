@@ -1,4 +1,5 @@
 #include "Game/RacingGameMode.h"
+#include "Car/RacingController.h"
 #include "Car/RaceCar.h"
 #include "Game/RaceDirector.h"
 #include "Game/RacingHUD.h"
@@ -556,11 +557,13 @@ void ARacingGameMode::HandleInput(float Dt)
 {
 	APlayerController* P = Pc();
 	if (!P || State == ERaceState::Loading || SplashFade > 0.f) return;
-	// keyboard and racing wheel / gamepad: A = Enter, Start = Esc, B backs out of prompts and
+	// keyboard, gamepad and racing wheel: A / OK = Enter, Start = Esc, B backs out of prompts and
 	// the results (never pauses a race by accident), the d-pad works the menu
-	const bool bEnter = Pressed(P, { EKeys::Enter, EKeys::Gamepad_FaceButton_Bottom });
-	const bool bBack = P->WasInputKeyJustPressed(EKeys::Gamepad_FaceButton_Right);
-	const bool bEsc = Pressed(P, { EKeys::Escape, EKeys::Gamepad_Special_Right })
+	using EWheel = FRacingController::EButton;
+	const FRacingController& W = FRacingController::Get();
+	const bool bEnter = Pressed(P, { EKeys::Enter, EKeys::Gamepad_FaceButton_Bottom }) || W.WasPressed(EWheel::Ok);
+	const bool bBack = P->WasInputKeyJustPressed(EKeys::Gamepad_FaceButton_Right) || W.WasPressed(EWheel::Back);
+	const bool bEsc = Pressed(P, { EKeys::Escape, EKeys::Gamepad_Special_Right }) || W.WasPressed(EWheel::Pause)
 		|| (bBack && (bConfirmOpen || State != ERaceState::Race));
 	if (P->WasInputKeyJustPressed(EKeys::H)) bShowHelp = !bShowHelp;
 	if (P->WasInputKeyJustPressed(EKeys::G)) ToggleQuality();
@@ -580,10 +583,10 @@ void ARacingGameMode::HandleInput(float Dt)
 	}
 	if (State == ERaceState::Menu)
 	{
-		if (Pressed(P, { EKeys::Up, EKeys::Gamepad_DPad_Up })) Menu.Row = (Menu.Row + FMenuSettings::Rows - 1) % FMenuSettings::Rows;
-		if (Pressed(P, { EKeys::Down, EKeys::Gamepad_DPad_Down })) Menu.Row = (Menu.Row + 1) % FMenuSettings::Rows;
-		const bool bLeft = Pressed(P, { EKeys::Left, EKeys::Gamepad_DPad_Left });
-		const bool bRight = Pressed(P, { EKeys::Right, EKeys::Gamepad_DPad_Right });
+		if (Pressed(P, { EKeys::Up, EKeys::Gamepad_DPad_Up }) || W.WasPressed(EWheel::Up)) Menu.Row = (Menu.Row + FMenuSettings::Rows - 1) % FMenuSettings::Rows;
+		if (Pressed(P, { EKeys::Down, EKeys::Gamepad_DPad_Down }) || W.WasPressed(EWheel::Down)) Menu.Row = (Menu.Row + 1) % FMenuSettings::Rows;
+		const bool bLeft = Pressed(P, { EKeys::Left, EKeys::Gamepad_DPad_Left }) || W.WasPressed(EWheel::Left);
+		const bool bRight = Pressed(P, { EKeys::Right, EKeys::Gamepad_DPad_Right }) || W.WasPressed(EWheel::Right);
 		if (bLeft || bRight)
 		{
 			HeldDirection = bLeft ? -1 : 1;
@@ -593,7 +596,8 @@ void ARacingGameMode::HandleInput(float Dt)
 		else if (HeldDirection != 0)
 		{
 			// hold Left / Right to repeat
-			const bool bHeld = HeldDirection < 0 ? Down(P, { EKeys::Left, EKeys::Gamepad_DPad_Left }) : Down(P, { EKeys::Right, EKeys::Gamepad_DPad_Right });
+			const bool bHeld = HeldDirection < 0 ? Down(P, { EKeys::Left, EKeys::Gamepad_DPad_Left }) || W.IsDown(EWheel::Left)
+				: Down(P, { EKeys::Right, EKeys::Gamepad_DPad_Right }) || W.IsDown(EWheel::Right);
 			if (!bHeld)
 			{
 				HeldDirection = 0;
@@ -641,6 +645,15 @@ void ARacingGameMode::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	const float Dt = FMath::Min(DeltaSeconds, 0.1f);
+	// racing wheel and pedals (DirectInput), read once a frame for the menus and the car
+	if (!bSimCheck && !bWallCheck)
+	{
+		FRacingController& Wheel = FRacingController::Get();
+		Wheel.Poll(Dt);
+		// force feedback follows the car you are driving; light centering in the menus
+		const ARaceCar* Mine = State == ERaceState::Race ? GetPlayerCar() : nullptr;
+		Wheel.SetForceFeedback(Mine ? Mine->GetSnapshot().Speed : 0.f);
+	}
 	SplashShown += (SplashTarget - SplashShown) * FMath::Min(1.f, Dt * 12.f);
 	if (SplashTarget - SplashShown < 0.002f) SplashShown = SplashTarget;
 	if (State == ERaceState::Loading)

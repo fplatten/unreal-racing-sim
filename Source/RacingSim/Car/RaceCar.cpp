@@ -1,4 +1,5 @@
 #include "Car/RaceCar.h"
+#include "Car/RacingController.h"
 #include "Track/OvalTrack.h"
 #include "Camera/CameraComponent.h"
 #include "Components/BoxComponent.h"
@@ -455,7 +456,7 @@ void ARaceCar::PT_End(double SimTime)
 
 bool ARaceCar::IsControllerConnected()
 {
-	return FSlateApplication::IsInitialized() && FSlateApplication::Get().IsGamepadAttached();
+	return FRacingController::Get().IsConnected() || (FSlateApplication::IsInitialized() && FSlateApplication::Get().IsGamepadAttached());
 }
 
 void ARaceCar::SetMouseSteering(bool bOn)
@@ -484,7 +485,21 @@ void ARaceCar::ReadPlayerKeys()
 	// racing wheel / gamepad (XInput): wheel or left stick steers (left = positive), pedals or
 	// triggers, paddles or shoulder buttons shift
 	bPadConnected = IsControllerConnected();
-	if (bPadConnected)
+	const FRacingController& Wheel = FRacingController::Get();
+	if (Wheel.IsConnected())
+	{
+		// racing wheel and pedals over DirectInput (see RacingController.h for the mapping)
+		using EB = FRacingController::EButton;
+		PadSteer = Wheel.GetSteer();
+		PadThrottle = Wheel.GetThrottle();
+		PadBrake = Wheel.GetBrake();
+		if (Wheel.WasPressed(EB::ShiftUp)) ShiftUpCount++;
+		if (Wheel.WasPressed(EB::ShiftDown)) ShiftDownCount++;
+		if (Wheel.WasPressed(EB::Auto)) ToggleAutoRequest = true;
+		if (Wheel.WasPressed(EB::Camera)) { bTCam = !bTCam; bSnapCamera = true; }
+		if (Wheel.WasPressed(EB::Reset)) { ResetRequest = true; bSnapCamera = true; }
+	}
+	else if (bPadConnected)
 	{
 		PadSteer = FMath::Clamp(-Pc->GetInputAnalogKeyState(EKeys::Gamepad_LeftX), -1.f, 1.f);
 		PadThrottle = FMath::Clamp(Pc->GetInputAnalogKeyState(EKeys::Gamepad_RightTriggerAxis), 0.f, 1.f);

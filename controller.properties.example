@@ -1,0 +1,39 @@
+# Racing wheel and pedals: optional settings.
+# Copy this file to controller.properties next to RacingSim.exe and remove the # in front of the
+# lines you want to change. Without the file, the wheel works with the defaults below.
+#
+# The main menu shows the connected wheel, the axes it uses for steering, throttle and brake, what
+# each one reads right now, and the number of the last button pressed: turn the wheel, press each
+# pedal and button, and set the numbers below to match if they are wrong.
+
+# Use the first controller whose name contains this text (when more than one is plugged in)
+#device=G29
+
+# Axes: a number (0 = the device's first axis) or a name: X, Y, Z, Rx, Ry, Rz, Slider0, Slider1.
+# By default the wheel is axis 0 and the pedals are the first two other axes that rest at one end
+# of their travel (throttle, then brake). Logitech G25/G27/G29/G923: X, Y, Rz.
+#steer.axis=X
+#throttle.axis=Y
+#brake.axis=Rz
+
+# Steering: invert, gain (2 = full lock with half the wheel turn), dead zone at center
+#steer.invert=false
+#steer.gain=1.0
+#steer.deadzone=0.01
+# Pedal dead zone at both ends of the travel
+#pedal.deadzone=0.03
+
+# Buttons (the device's own numbers, starting at 0). The defaults suit Logitech wheels (right paddle
+# 4 shifts up, left paddle 5 down); press a button and read its number in the menu if yours differ.
+#button.shiftUp=4
+#button.shiftDown=5
+#button.camera=3
+#button.auto=2
+#button.reset=6
+#button.pause=7
+#button.ok=0
+#button.back=1
+
+# Force feedback: a centering spring that stiffens with speed, plus light damping
+#ffb=true
+#ffb.strength=0.5
