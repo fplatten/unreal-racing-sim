@@ -8,9 +8,8 @@ namespace
 	constexpr float Spread = 140.f;
 	constexpr float Resolution = 2.f;
 	constexpr float MaxSpeed = 150.f;
-	/** Road course braking: the brakes' limit (m/s^2), and how much of the grip the AI plans to use
-	 *  (tuning: -AiBrakeGrip=). */
-	constexpr float RoadBrakeLimit = 36.f;
+	/** Road course braking: how much of the grip the AI plans to use (tuning: -AiBrakeGrip=); the
+	 *  brakes' own limit is FVehicleSpec::MaxBrakeDecel. */
 	float BrakeConfidence()
 	{
 		static const float C = [] { float V = 0.82f; FParse::Value(FCommandLine::Get(), TEXT("AiBrakeGrip="), V); return V; }();
@@ -192,7 +191,7 @@ void FSpeedProfile::BuildRoad(TArray<float>& Out, TFunctionRef<float(float)> Cur
 		Kabs[i] = Kp;
 		Out[i] = Kp < 1e-4f ? MaxSpeed : CornerSpeed(M, 1.f / Kp, 0.f, GripFactor, K);
 	}
-	// the brakes manage about 4 g; the AI aims a little short of the grip
+	// the AI aims a little short of the grip
 	for (int32 Pass = 0; Pass < 2; Pass++)
 	{
 		for (int32 i = N - 1; i >= 0; i--)
@@ -201,7 +200,7 @@ void FSpeedProfile::BuildRoad(TArray<float>& Out, TFunctionRef<float(float)> Cur
 			const float GripAcc = GripFactor * (G + K * Next * Next / M);
 			const float Lat = Next * Next * Kabs[i];
 			const float Used = FMath::Clamp(Lat / GripAcc, 0.f, 0.95f);
-			float Decel = FMath::Min(GripAcc * BrakeConfidence(), RoadBrakeLimit) * FMath::Sqrt(1.f - Used * Used);
+			float Decel = FMath::Min(GripAcc * BrakeConfidence(), Spec.MaxBrakeDecel) * FMath::Sqrt(1.f - Used * Used);
 			Decel = FMath::Max(Decel + G * Track.Grade(i * Resolution), 2.f);
 			const float Allowed = FMath::Sqrt(Next * Next + 2.f * Decel * Resolution);
 			if (Allowed < Out[i]) Out[i] = Allowed;

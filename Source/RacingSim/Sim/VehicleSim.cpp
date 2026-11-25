@@ -60,10 +60,14 @@ float FTrackSurface::Cast(const FVector& From, const FVector& Dir, float MaxDist
 FVehicleSim::FVehicleSim(const FVehicleSpec& InSpec, const FTrackSurface* InSurface)
 	: Spec(InSpec), Surface(InSurface), Gearbox(&Spec)
 {
-	// road course gearing: shorter, for the slow turns and the climb up the long straight
-	// (~205 mph on the limiter instead of ~243)
-	if (FTrackSpline::IsRoadCourse()) Spec.FinalDrive = RoadFinalDrive;
 	FParse::Value(FCommandLine::Get(), TEXT("FinalDrive="), Spec.FinalDrive);   // tuning
+	Tire.Mu = Spec.TireMu;
+	Tire.LoadSensitivity = Spec.TireLoadSensitivity;
+	Aero.MinDragArea = Spec.MinDragArea;
+	Aero.MinLiftArea = Spec.MinLiftArea;
+	Aero.MaxDragArea = Spec.MaxDragArea;
+	Aero.MaxLiftArea = Spec.MaxLiftArea;
+	Aero.SetDownforceLevel(0.f);
 	const float Mh = Spec.MountHeight;
 	// Java mounts (+x = left) -> Unreal (+y = right)
 	Wheels[FL].MountLocal = FVector(Spec.FrontAxleX, -Spec.FrontHalfTrack, Mh);
@@ -77,11 +81,10 @@ FVehicleSim::FVehicleSim(const FVehicleSpec& InSpec, const FTrackSurface* InSurf
 
 FVector FVehicleSim::BodyInvInertia(const FVehicleSpec& Spec)
 {
-	// Bullet derives a compound shape's inertia from its bounding box plus the 0.04 m collision
-	// margin: the Java car's collider is a 2.0 x 0.5 x 5.0 m box (width, height, length).
-	// Measured from Minie: pitch 1699.3, yaw 1958.6, roll 303.1 kg m^2.
+	// As Bullet derives a compound shape's inertia, from its bounding box plus the 0.04 m collision
+	// margin: the car's collider is a 2.0 x 0.5 m box, Spec.BodyLength long (width, height, length).
 	const float Margin = 0.04f;
-	const float Lx = 5.0f + 2 * Margin, Ly = 2.0f + 2 * Margin, Lz = 0.5f + 2 * Margin;   // Unreal local: length, width, height
+	const float Lx = Spec.BodyLength + 2 * Margin, Ly = 2.0f + 2 * Margin, Lz = 0.5f + 2 * Margin;   // Unreal local: length, width, height
 	const float K = Spec.Mass / 12.f;
 	const FVector I(K * (Ly * Ly + Lz * Lz), K * (Lx * Lx + Lz * Lz), K * (Lx * Lx + Ly * Ly));
 	return FVector(1.0 / I.X, 1.0 / I.Y, 1.0 / I.Z);

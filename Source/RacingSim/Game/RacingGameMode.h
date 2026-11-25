@@ -62,6 +62,8 @@ struct FMenuSettings
  *   -SimCheck           headless check like the Java `gradlew simCheck -Pplayer=ai`: an all-AI
  *                       field (-Cars=8), the 6th car is watched; prints telemetry and the
  *                       classification, then quits (-Seconds=260 limit)
+ *   -CarCheck           headless performance check: 0-60 / 0-100 mph, the stop from 200 mph and
+ *                       the top speed, at minimum and maximum wing, then quits
  *   -AutoShot=6,12,20   screenshots (with the HUD) at these race times, then quit; with -ShotMenu
  *                       the times count from the menu instead (-ShotCam=tcam for the T-cam)
  */
@@ -96,6 +98,7 @@ private:
 	void BuildSimCheckField(int32 CarCount, int32 Downforce);
 	ARaceCar* SpawnCar(int32 Slot, int32 CarCount, int32 LiveryIndex, bool bHuman, const FString& NameOverride);
 	void AiParams(int32 Index, float& Grip, float& Aggression);
+	static float AiGripBase();
 	void EnterMenu();
 	void StartRace();
 	void ShowResults();
@@ -112,6 +115,7 @@ private:
 	void AutomationTick();
 	void LogClassification();
 	void WallCheckTick();
+	void CarCheckTick();
 	class APlayerController* Pc() const;
 
 	UPROPERTY()
@@ -139,6 +143,14 @@ private:
 	TObjectPtr<ATireSmoke> Smoke;
 
 	FRaceAudio Audio;
+
+	// car check (-CarCheck): launch, braking and top speed on the oval's front straight
+	bool bCarCheck = false;
+	int32 CarRun = -1;
+	int32 CarSeenPlacements = 0;
+	double CarRunStart = -1.0;
+	float CarStartS = 0.f, CarT60 = NAN, CarT100 = NAN, CarPeakG = 0.f;
+	TArray<FString> CarResults;
 
 	// wall check (-WallCheck): port of WallHitCheck
 	bool bWallCheck = false;

@@ -67,7 +67,8 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** Name, race number, livery color and whether a human drives it. Call right after spawning. */
-	void SetIdentity(const FString& Name, int32 Number, bool bHuman, const FLinearColor& Primary, const FLinearColor& Secondary);
+	void SetIdentity(const FString& Name, int32 Number, bool bHuman, const FLinearColor& Primary, const FLinearColor& Secondary,
+		const FLinearColor& Accent = FLinearColor(0.8f, 0.05f, 0.05f));
 
 	FCarCore& Core() { return CoreData; }
 	const FCarCore& Core() const { return CoreData; }
@@ -87,6 +88,10 @@ public:
 	void PlaceCustom(const FVector& ComPos, const FQuat& Rot, const FVector& Vel, float WheelSpeed);
 	/** Fixed throttle instead of the keys (tests); negative = off. */
 	void SetScriptedThrottle(float T) { ScriptedThrottle = T; }
+	/** Scripted runs (tests): the brake pedal, and whether the "driver" feeds the throttle in
+	 *  against wheelspin and keeps the brakes just short of locking. */
+	void SetScriptedBrake(float B) { ScriptedBrake = B; }
+	void SetScriptedLimits(bool bOn) { bScriptedLimits = bOn; }
 	bool IsScripted() const { return ScriptedThrottle.load() >= 0.f; }
 	bool IsTCam() const { return bTCam; }
 	bool IsMouseSteering() const { return bMouseSteering; }
@@ -113,6 +118,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void PreRegisterAllComponents() override;
 
 private:
 	void ReadPlayerKeys();
@@ -149,6 +155,7 @@ private:
 	FCarCore CoreData;
 	FLinearColor LiveryPrimary = FLinearColor(0.9f, 0.9f, 0.9f);
 	FLinearColor LiverySecondary = FLinearColor(0.9f, 0.9f, 0.9f);
+	FLinearColor LiveryAccent = FLinearColor(0.8f, 0.05f, 0.05f);
 
 	// ---- game thread -> physics thread ----
 	std::atomic<bool> KeyThrottle{ false }, KeyBrake{ false }, KeyLeft{ false }, KeyRight{ false };
@@ -167,6 +174,8 @@ private:
 	float CustomWheelSpeed = 0.f;
 	int32 PlacementCount = 0;
 	std::atomic<float> ScriptedThrottle{ -1.f };
+	std::atomic<float> ScriptedBrake{ 0.f };
+	std::atomic<bool> bScriptedLimits{ false };
 	float ResetS = 0.f, ResetD = 0.f, ResetSpeed = 0.f;
 
 	// ---- physics thread state ----

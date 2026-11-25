@@ -15,13 +15,23 @@
 
 namespace
 {
-	/** Car collider (Java: a 2.0 x 0.5 x 5.0 m box, 0.12 m above and 0.03 m behind the center of mass). */
-	const FVector BoxHalfCm(250.f, 100.f, 25.f);
-	const FVector ComInBoxCm(3.f, 0.f, -12.f);
+	/** Car collider: a 2.0 x 0.5 m box, FVehicleSpec::BodyLength long, 0.12 m above the center of
+	 *  mass (Java: 2.0 x 0.5 x 5.0 m for the Indy car). */
+	FVector BoxHalfCm(const FVehicleSpec& Spec) { return FVector(Spec.BodyLength * 50.f, 100.f, 25.f); }
+	FVector ComInBoxCm(const FVehicleSpec& Spec) { return FVector(-Spec.BodyCenterAhead * 100.f, 0.f, -12.f); }
 
-	const TCHAR* BodyMeshPath = TEXT("/Game/Models/Car/indycar_mesh.indycar_mesh");
-	const TCHAR* WheelFrontPath = TEXT("/Game/Models/Car/wheel_front_mesh.wheel_front_mesh");
-	const TCHAR* WheelRearPath = TEXT("/Game/Models/Car/wheel_rear_mesh.wheel_rear_mesh");
+	/** Each car's model and wheels: the Java Indy car, and the Formula car (Scripts/make_f1_car.py). */
+	struct FCarModel { const TCHAR* Body; const TCHAR* WheelFront; const TCHAR* WheelRear; };
+	FCarModel ModelFor(ECarType Type)
+	{
+		if (Type == ECarType::Formula)
+		{
+			return { TEXT("/Game/Models/Car/f1car_mesh.f1car_mesh"), TEXT("/Game/Models/Car/f1_wheel_front_mesh.f1_wheel_front_mesh"),
+				TEXT("/Game/Models/Car/f1_wheel_rear_mesh.f1_wheel_rear_mesh") };
+		}
+		return { TEXT("/Game/Models/Car/indycar_mesh.indycar_mesh"), TEXT("/Game/Models/Car/wheel_front_mesh.wheel_front_mesh"),
+			TEXT("/Game/Models/Car/wheel_rear_mesh.wheel_rear_mesh") };
+	}
 
 	/**
 	 * The glTF models are authored in the Java car frame (+Z forward, +Y up, +X left). Unreal's
@@ -50,11 +60,11 @@ ARaceCar::ARaceCar()
 
 	Body = CreateDefaultSubobject<UBoxComponent>(TEXT("Body"));
 	SetRootComponent(Body);
-	Body->SetBoxExtent(BoxHalfCm);
+	Body->SetBoxExtent(BoxHalfCm(Spec));
 	Body->SetCollisionProfileName(TEXT("PhysicsActor"));
 	Body->SetSimulatePhysics(true);
 	Body->BodyInstance.SetMassOverride(Spec.Mass, true);
-	Body->BodyInstance.COMNudge = ComInBoxCm;
+	Body->BodyInstance.COMNudge = ComInBoxCm(Spec);
 	// no CCD: Chaos' swept contacts against the thin wall triangles threw cars hundreds of meters in the wall test
 	// wall contacts pass through FWallContactFilter (bodies must opt in to contact modification)
 	Body->BodyInstance.bContactModification = true;
@@ -65,7 +75,7 @@ ARaceCar::ARaceCar()
 
 	ModelRoot = CreateDefaultSubobject<USceneComponent>(TEXT("ModelRoot"));
 	ModelRoot->SetupAttachment(Body);
-	ModelRoot->SetRelativeLocation(ComInBoxCm);
+	ModelRoot->SetRelativeLocation(ComInBoxCm(Spec));
 
 	BodyMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BodyMesh"));
 	BodyMesh->SetupAttachment(ModelRoot);
@@ -98,7 +108,20 @@ ARaceCar::ARaceCar()
 	AutoPossessPlayer = EAutoReceiveInput::Disabled;
 }
 
-void ARaceCar::SetIdentity(const FString& Name, int32 Number, bool bHuman, const FLinearColor& Primary, const FLinearColor& Secondary)
+void ARaceCar::PreRegisterAllComponents()
+{
+	// the car for the selected track (the constructor ran with the defaults, the Indy car), set
+	// before the components register so the body is created with this car's size and mass
+	Spec = FVehicleSpec::ForTrack();
+	Body->SetBoxExtent(BoxHalfCm(Spec), false);
+	Body->BodyInstance.SetMassOverride(Spec.Mass, true);
+	Body->BodyInstance.COMNudge = ComInBoxCm(Spec);
+	ModelRoot->SetRelativeLocation(ComInBoxCm(Spec));
+	BodyMesh->SetRelativeLocation(FVector(0, 0, -Spec.RideHeight() * 100.f));
+	Super::PreRegisterAllComponents();
+}
+
+void ARaceCar::SetIdentity(const FString& Name, int32 Number, bool bHuman, const FLinearColor& Primary, const FLinearColor& Secondary, const FLinearColor& Accent)
 {
 	if (!CoreData.Sim)
 	{
@@ -112,6 +135,7 @@ void ARaceCar::SetIdentity(const FString& Name, int32 Number, bool bHuman, const
 	CoreData.bPlayer = bHuman;
 	LiveryPrimary = Primary;
 	LiverySecondary = Secondary;
+	LiveryAccent = Accent;
 	if (BodyMesh->GetStaticMesh()) ApplyLivery();
 }
 
@@ -119,10 +143,11 @@ void ARaceCar::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (UStaticMesh* M = LoadObject<UStaticMesh>(nullptr, BodyMeshPath)) BodyMesh->SetStaticMesh(M);
-	else UE_LOG(LogTemp, Warning, TEXT("Car model %s not found; run Scripts/setup_content.py"), BodyMeshPath);
-	UStaticMesh* Front = LoadObject<UStaticMesh>(nullptr, WheelFrontPath);
-	UStaticMesh* Rear = LoadObject<UStaticMesh>(nullptr, WheelRearPath);
+	const FCarModel Model = ModelFor(Spec.Type);
+	if (UStaticMesh* M = LoadObject<UStaticMesh>(nullptr, Model.Body)) BodyMesh->SetStaticMesh(M);
+	else UE_LOG(LogTemp, Warning, TEXT("Car model %s not found; run Scripts/setup_content.py"), Model.Body);
+	UStaticMesh* Front = LoadObject<UStaticMesh>(nullptr, Model.WheelFront);
+	UStaticMesh* Rear = LoadObject<UStaticMesh>(nullptr, Model.WheelRear);
 	for (int32 i = 0; i < 4; i++) WheelMesh[i]->SetStaticMesh(i < 2 ? Front : Rear);
 	ApplyLivery();
 
@@ -138,15 +163,20 @@ void ARaceCar::BeginPlay()
 	Body->SetNotifyRigidBodyCollision(true);
 	Body->OnComponentHit.AddDynamic(this, &ARaceCar::OnBodyHit);
 
-	if (!CoreData.Sim) SetIdentity(TEXT("Car"), 0, false, LiveryPrimary, LiverySecondary);
+	if (!CoreData.Sim) SetIdentity(TEXT("Car"), 0, false, LiveryPrimary, LiverySecondary, LiveryAccent);
 }
 
 void ARaceCar::ApplyLivery()
 {
-	// The livery and helmet are painted by the Java LiveryPainter / HelmetPainter at build time
-	// (gradlew bakeLiveries) and imported as T_Livery_<number> / T_Helmet_<number>; a car without
-	// a baked texture gets its primary (livery) and secondary (helmet) color. The imported glTF
-	// materials have their colors baked in, so these parts get the parameterized surface material.
+	// The Indy car: the livery and helmet are painted by the Java LiveryPainter / HelmetPainter at
+	// build time (gradlew bakeLiveries) and imported as T_Livery_<number> / T_Helmet_<number>; a car
+	// without a baked texture gets its primary (livery) and secondary (helmet) color.
+	// The Formula car is painted at run time: the model's Livery parts in its primary color,
+	// LiverySecondary in the secondary, LiveryAccent (the pinstripe, the wing tips) and the helmet
+	// in the accent.
+	// The imported glTF materials have their colors baked in, so these parts get the
+	// parameterized surface material.
+	const bool bIndy = Spec.Type == ECarType::Indy;
 	UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Surface.M_Surface"));
 	if (!Surface) return;
 	// Java BodyDetail, shared by every livery: panel seams, fasteners, stone chips and rubber
@@ -161,10 +191,14 @@ void ARaceCar::ApplyLivery()
 		const bool bLivery = SlotName.StartsWith(TEXT("Livery"));
 		const bool bHelmet = SlotName.StartsWith(TEXT("Helmet"));
 		if (!bLivery && !bHelmet) continue;
-		const FString Kind = bLivery ? TEXT("Livery") : TEXT("Helmet");
-		const FString TexPath = FString::Printf(TEXT("/Game/Textures/Liveries/T_%s_%d.T_%s_%d"), *Kind, CoreData.Number, *Kind, CoreData.Number);
-		UTexture* Painted = LoadObject<UTexture>(nullptr, *TexPath, nullptr, LOAD_Quiet | LOAD_NoWarn);
 		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Surface, this);
+		UTexture* Painted = nullptr;
+		if (bIndy)
+		{
+			const FString Kind = bLivery ? TEXT("Livery") : TEXT("Helmet");
+			const FString TexPath = FString::Printf(TEXT("/Game/Textures/Liveries/T_%s_%d.T_%s_%d"), *Kind, CoreData.Number, *Kind, CoreData.Number);
+			Painted = LoadObject<UTexture>(nullptr, *TexPath, nullptr, LOAD_Quiet | LOAD_NoWarn);
+		}
 		if (Painted)
 		{
 			Mid->SetTextureParameterValue(TEXT("Albedo"), Painted);
@@ -173,7 +207,11 @@ void ARaceCar::ApplyLivery()
 		}
 		else
 		{
-			Mid->SetVectorParameterValue(TEXT("Tint"), bLivery ? LiveryPrimary : LiverySecondary);
+			const FLinearColor Color = bIndy ? (bLivery ? LiveryPrimary : LiverySecondary)
+				: bHelmet ? LiveryAccent
+				: SlotName.StartsWith(TEXT("LiverySecondary")) ? LiverySecondary
+				: SlotName.StartsWith(TEXT("LiveryAccent")) ? LiveryAccent : LiveryPrimary;
+			Mid->SetVectorParameterValue(TEXT("Tint"), Color);
 		}
 		// clear-coated paint, glossy helmet
 		Mid->SetScalarParameterValue(TEXT("Roughness"), bLivery ? 0.25f : 0.10f);
@@ -354,8 +392,21 @@ void ARaceCar::PT_ApplyPlayerInput(float Dt)
 	if (ClearCommandsRequest.exchange(false)) ThrottleCmd = BrakeCmd = SteerCmd = 0.f;
 	if (ScriptedThrottle.load() >= 0.f)
 	{
-		In.Throttle = ScriptedThrottle.load();
-		In.Brake = 0.f;
+		float T = ScriptedThrottle.load(), Bk = ScriptedBrake.load();
+		if (bScriptedLimits.load())
+		{
+			// a good driver: throttle fed in against wheelspin, brakes on the edge of locking
+			const FVehicleSim& Phys = *CoreData.Sim;
+			float Lock = 0.f;
+			for (int32 i = 0; i < 4; i++) Lock = FMath::Min(Lock, Phys.GetWheels()[i].SlipRatio);
+			// hold the slip just under the tires' peak (about 10%): integral control on the slip
+			ThrottleCmd = FMath::Clamp(ThrottleCmd + (0.08f - Phys.GetRearSlipRatio()) * 40.f * Dt, 0.15f, T);
+			BrakeCmd = FMath::Clamp(BrakeCmd + (Lock + 0.085f) * 60.f * Dt, 0.05f, Bk);
+			T = T > 0.f ? ThrottleCmd : 0.f;
+			Bk = Bk > 0.f ? BrakeCmd : 0.f;
+		}
+		In.Throttle = T;
+		In.Brake = Bk;
 		In.Steer = 0.f;
 		return;
 	}

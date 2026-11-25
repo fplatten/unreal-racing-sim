@@ -82,8 +82,6 @@ public:
 	static constexpr float ImpactLiftKeep = 0.2f;
 	static constexpr float ImpactDv = 0.6f;
 	static constexpr float ImpactDw = 0.4f;
-	/** Final drive on a road course (the oval's is FVehicleSpec::FinalDrive). */
-	static constexpr float RoadFinalDrive = 4.2f;
 
 	struct FWheel
 	{

@@ -249,6 +249,12 @@ void ARacingGameMode::StartPlay()
 	const TCHAR* Cmd = FCommandLine::Get();
 	bSimCheck = FParse::Param(Cmd, TEXT("SimCheck"));
 	bWallCheck = FParse::Param(Cmd, TEXT("WallCheck"));
+	bCarCheck = FParse::Param(Cmd, TEXT("CarCheck"));
+	if (bCarCheck)
+	{
+		bWallCheck = true;   // the same set-up: one car alone, scripted (CarCheckTick takes over below)
+		FTrackSpline::SelectLayout(ETrackLayout::Oval);
+	}
 	if (bWallCheck)
 	{
 		// one car, alone on the track
@@ -397,11 +403,17 @@ float ARacingGameMode::GetSplashOpacity() const
 
 // --------------------------------------------------------------------------------- field
 
+float ARacingGameMode::AiGripBase()
+{
+	// the lowest grip the AI plans on: the Indy car's tires give 1.55, the Formula car's 1.9
+	return FVehicleSpec::ForTrack().Type == ECarType::Formula ? 1.50f : 1.22f;
+}
+
 void ARacingGameMode::AiParams(int32 Index, float& Grip, float& Aggression)
 {
 	while (AiParamPool.Num() <= Index)
 	{
-		const float G = 1.22f + AiRandom.NextFloat() * 0.10f;
+		const float G = AiGripBase() + AiRandom.NextFloat() * 0.10f;   // planned grip
 		const float A = AiRandom.NextFloat();   // driver type: 0 rookie .. 1 veteran
 		AiParamPool.Add(FVector2f(G, A));
 	}
@@ -419,7 +431,7 @@ ARaceCar* ARacingGameMode::SpawnCar(int32 Slot, int32 CarCount, int32 LiveryInde
 	const FVector Pos = Spline.Point(S, D) * 100.0 + FVector(0, 0, 60);
 	ARaceCar* Car = GetWorld()->SpawnActor<ARaceCar>(ARaceCar::StaticClass(), Pos, Spline.Forward(S).Rotation(), Params);
 	const FLivery L = LiveryForIndex(LiveryIndex);
-	Car->SetIdentity(NameOverride.IsEmpty() ? L.Name : NameOverride, L.Number, bHuman, L.Primary, L.Secondary);
+	Car->SetIdentity(NameOverride.IsEmpty() ? L.Name : NameOverride, L.Number, bHuman, L.Primary, L.Secondary, L.Accent);
 	FieldCars.Add(Car);
 	return Car;
 }
@@ -448,7 +460,7 @@ void ARacingGameMode::BuildField()
 		if (Slot == PlayerSlot)
 		{
 			ARaceCar* Car = SpawnCar(Slot, CarCount, 0, true, TEXT("YOU"));
-			Director->AddCar(Car, bAutopilot ? MakeDriver(Car, 1.3f, 0.6f) : nullptr);
+			Director->AddCar(Car, bAutopilot ? MakeDriver(Car, AiGripBase() + 0.08f, 0.6f) : nullptr);
 			Watched = Car;
 			continue;
 		}
@@ -473,7 +485,7 @@ void ARacingGameMode::BuildSimCheckField(int32 CarCount, int32 Downforce)
 	FJavaRandom Rnd(42);
 	FAIDriver::Stats = FAIDriver::FStats();
 	// tuning: -AiGrip=<lowest planned grip> -AiGripSpread=<range above it>
-	float GripBase = 1.22f, GripSpread = 0.10f;
+	float GripBase = AiGripBase(), GripSpread = 0.10f;
 	FParse::Value(FCommandLine::Get(), TEXT("AiGrip="), GripBase);
 	FParse::Value(FCommandLine::Get(), TEXT("AiGripSpread="), GripSpread);
 	const int32 WatchedSlot = FMath::Min(5, CarCount - 1);
@@ -716,6 +728,11 @@ void ARacingGameMode::Tick(float DeltaSeconds)
 	}
 	if (SplashFade > 0.f) SplashFade -= Dt;
 
+	if (bCarCheck)
+	{
+		CarCheckTick();
+		return;
+	}
 	if (bWallCheck)
 	{
 		WallCheckTick();
@@ -905,6 +922,102 @@ void ARacingGameMode::AddReferencedObjects(UObject* InThis, FReferenceCollector&
 }
 
 // --------------------------------------------------------------------------- wall check
+
+void ARacingGameMode::CarCheckTick()
+{
+	// One car on the oval's front straight (flat, 1 km), driven by script: a standing start at
+	// full throttle (0-60 and 0-100 mph), a stop from 200 mph on the brakes (distance, peak g),
+	// and full throttle from 200 and from 225 mph for 950 m (the top speed lies between where
+	// the two end up); all at minimum and at maximum wing.
+	if (!Watched || !Track) return;
+	const FTrackSpline& Spl = Track->GetSpline();
+	constexpr float Mph = 0.44704f;
+	struct FTest { float Wing; int32 Kind; float V0; };   // Kind: 0 launch, 1 brake, 2 flat out
+	static const FTest Tests[] = {
+		{ 0.f, 0, 0.f }, { 0.f, 1, 200.f * Mph }, { 0.f, 2, 200.f * Mph }, { 0.f, 2, 225.f * Mph },
+		{ 1.f, 0, 0.f }, { 1.f, 1, 200.f * Mph }, { 1.f, 2, 200.f * Mph }, { 1.f, 2, 225.f * Mph } };
+	constexpr int32 NumTests = UE_ARRAY_COUNT(Tests);
+	const float StartS = FTrackSpline::WrapS(-495.f);
+	auto Launch = [&](int32 Run)
+	{
+		const FTest& T = Tests[Run];
+		Watched->Core().Sim->GetAero().SetDownforceLevel(T.Wing);
+		const FVector N = Spl.SurfaceNormal(StartS, 0.f);
+		const FVector Fwd = Spl.Forward(StartS);
+		const FVector Pos = Spl.Point(StartS, 0.f) + N * (Watched->Core().Spec().RideHeight() + 0.03f);
+		Watched->SetScriptedLimits(true);
+		Watched->SetScriptedThrottle(T.Kind == 1 ? 0.f : 1.f);
+		Watched->SetScriptedBrake(T.Kind == 1 ? 1.f : 0.f);
+		Watched->PlaceCustom(Pos, FRotationMatrix::MakeFromXZ(Fwd, N).ToQuat(), Fwd * T.V0, T.V0);
+		CarRunStart = -1.0;
+		CarT60 = CarT100 = NAN;
+		CarPeakG = 0.f;
+	};
+	if (CarRun < 0)
+	{
+		CarRun = 0;
+		Launch(0);
+		return;
+	}
+	const FCarSnapshot C = Watched->GetSnapshot();
+	if (C.PlacementCount <= CarSeenPlacements) return;
+	if (CarRunStart < 0.0)
+	{
+		CarRunStart = C.SimTime;
+		CarStartS = C.TrackS;
+	}
+	const FTest& T = Tests[CarRun];
+	const float Time = C.SimTime - CarRunStart;
+	const float Dist = FTrackSpline::DeltaS(CarStartS, C.TrackS);
+	const float V = C.ForwardSpeed;
+	bool bDone = false;
+	FString Line;
+	const TCHAR* WingName = T.Wing > 0.5f ? TEXT("max wing") : TEXT("min wing");
+	static const bool bTrace = FParse::Param(FCommandLine::Get(), TEXT("CarTrace"));
+	static double NextTrace = 0.0;
+	if (bTrace && C.SimTime >= NextTrace)
+	{
+		NextTrace = C.SimTime + 0.2;
+		UE_LOG(LogRacingSim, Display, TEXT("CARTRACE run %d t=%.2f v=%.1f mph gear %d rpm %.0f thr %.2f brk %.2f slip %.3f longG %.2f"), CarRun, Time, V / Mph,
+			C.Gear, C.Rpm, C.Throttle, C.Brake, C.RearSlipRatio, C.LongitudinalG);
+	}
+	if (T.Kind == 0)
+	{
+		if (FMath::IsNaN(CarT60) && V >= 60.f * Mph) CarT60 = Time;
+		if (FMath::IsNaN(CarT100) && V >= 100.f * Mph) CarT100 = Time;
+		if (!FMath::IsNaN(CarT100) || Time > 15.f)
+		{
+			bDone = true;
+			Line = FString::Printf(TEXT("%s: 0-60 mph %.2f s, 0-100 mph %.2f s (%.0f m)"), WingName, CarT60, CarT100, Dist);
+		}
+	}
+	else if (T.Kind == 1)
+	{
+		CarPeakG = FMath::Min(CarPeakG, C.LongitudinalG);
+		if (V < 0.5f || Time > 15.f)
+		{
+			bDone = true;
+			Line = FString::Printf(TEXT("%s: 200-0 mph in %.1f m, %.2f s, peak %.1f g, average %.1f g"), WingName, Dist, Time,
+				-CarPeakG, 200.f * Mph / FMath::Max(Time, 0.01f) / 9.81f);
+		}
+	}
+	else if (Dist > 950.f || Time > 20.f)
+	{
+		bDone = true;
+		Line = FString::Printf(TEXT("%s: flat out from %.0f mph -> %.1f mph after %.0f m (gear %d, %.0f rpm)"), WingName, T.V0 / Mph, V / Mph, Dist, C.Gear, C.Rpm);
+	}
+	if (!bDone) return;
+	UE_LOG(LogRacingSim, Display, TEXT("CARCHECK %s"), *Line);
+	CarResults.Add(Line);
+	CarSeenPlacements = C.PlacementCount;
+	if (++CarRun < NumTests)
+	{
+		Launch(CarRun);
+		return;
+	}
+	for (const FString& L : CarResults) UE_LOG(LogRacingSim, Display, TEXT("CARCHECK summary  %s"), *L);
+	FGenericPlatformMisc::RequestExit(false);
+}
 
 void ARacingGameMode::WallCheckTick()
 {

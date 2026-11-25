@@ -10,9 +10,22 @@
  * (The Java frame is +Z forward, +Y up, +X left: Java (x, y, z) -> Unreal (z, -x, y).)
  */
 
-/** Physical parameters of the open-wheel car (com.racingsim.vehicle.VehicleSpec). */
+/** Which car: the Indy car races the oval, the Formula car the road course. */
+enum class ECarType : uint8
+{
+	Indy,
+	Formula
+};
+
+/**
+ * Physical parameters of the open-wheel car (com.racingsim.vehicle.VehicleSpec). The defaults are
+ * the 1995-style Indy car (the Java car); Formula() is the 1995-style Formula car. ForTrack() picks
+ * the car for the selected track.
+ */
 struct RACINGSIM_API FVehicleSpec
 {
+	ECarType Type = ECarType::Indy;
+
 	// ---- Mass & geometry ----
 	float Mass = 780.f;
 	float WheelRadius = 0.33f;
@@ -22,6 +35,10 @@ struct RACINGSIM_API FVehicleSpec
 	float RearHalfTrack = 0.82f;
 	/** Height of the suspension mount points above the center of mass. */
 	float MountHeight = 0.10f;
+	/** The collider: a 2.0 x 0.5 m box this long (m), 0.12 m above the center of mass, its middle
+	 *  this far ahead of the center of mass (m). */
+	float BodyLength = 5.0f;
+	float BodyCenterAhead = -0.03f;
 
 	// ---- Suspension ----
 	float RestLength = 0.12f;
@@ -36,13 +53,24 @@ struct RACINGSIM_API FVehicleSpec
 	/** Height above the contact patch at which tire forces are applied (reduces jacking). */
 	float TireForceLift = 0.08f;
 
-	// ---- Wheels / brakes ----
+	// ---- Wheels / brakes / tires ----
 	float WheelInertia = 1.4f;
 	float BrakeTorqueFront = 3200.f;
 	float BrakeTorqueRear = 2200.f;
 	float RollingResistance = 0.012f;
 	float FrontGrip = 1.0f;
 	float RearGrip = 1.10f;
+	/** The tires' peak friction coefficient and how it falls off with load (FTireModel). */
+	float TireMu = 1.55f;
+	float TireLoadSensitivity = 0.07f;
+	/** The most the brakes manage (m/s^2): the road course AI plans its braking with it. */
+	float MaxBrakeDecel = 36.f;
+
+	// ---- Aero: drag and downforce areas (Cd A, Cl A in m^2) from minimum to maximum wing ----
+	float MinDragArea = 0.75f;
+	float MinLiftArea = 2.2f;
+	float MaxDragArea = 0.98f;
+	float MaxLiftArea = 4.0f;
 
 	// ---- Steering ----
 	float MaxSteerLow = 0.40f;
@@ -64,6 +92,9 @@ struct RACINGSIM_API FVehicleSpec
 	 *  way round (the Java 3.2 left the turns at ~9,000 rpm, 20% down on power); the limiter
 	 *  (12,300 rpm) is ~243 mph in a tow. Tuning: -FinalDrive=. */
 	float FinalDrive = 3.55f;
+	/** Final drive on a road course: shorter, for the slow turns and the climb up the long
+	 *  straight (~205 mph on the limiter). */
+	float RoadFinalDrive = 4.2f;
 	float DrivetrainEfficiency = 0.92f;
 	float ShiftTime = 0.06f;
 	float AutoUpshiftRpm = 11800.f;
@@ -83,6 +114,14 @@ struct RACINGSIM_API FVehicleSpec
 		const float StaticComp = Mass * 9.81f / 4.f / SpringFront;
 		return WheelRadius + RestLength - StaticComp - MountHeight;
 	}
+
+	/** The 1995-style Indy car (the defaults). */
+	static FVehicleSpec Indy() { return FVehicleSpec(); }
+	/** The 1995-style Formula car (Scripts/make_f1_car.py builds its model). */
+	static FVehicleSpec Formula();
+	/** The car for the selected track (the Indy car on the oval, the Formula car on the road
+	 *  course) with that track's gearing. Tuning: -Car=indy|f1 races that car anywhere. */
+	static FVehicleSpec ForTrack();
 };
 
 /** Driver commands (com.racingsim.vehicle.VehicleInput), written by the player or an AI. */
@@ -107,6 +146,7 @@ struct RACINGSIM_API FTireModel
 {
 	float LatB = 18.f, LatC = 1.6f, LatE = 0.6f;
 	float LongB = 20.f, LongC = 1.6f, LongE = 0.6f;
+	/** Set from FVehicleSpec::TireMu / TireLoadSensitivity. */
 	float Mu = 1.55f;
 	float NominalLoad = 2500.f;
 	float LoadSensitivity = 0.07f;
@@ -138,10 +178,11 @@ struct RACINGSIM_API FTireModel
 struct RACINGSIM_API FAeroModel
 {
 	static constexpr float AirDensity = 1.225f;
-	static constexpr float MinDragArea = 0.75f;
-	static constexpr float MinLiftArea = 2.2f;
-	static constexpr float MaxDragArea = 0.98f;
-	static constexpr float MaxLiftArea = 4.0f;
+	/** Drag and downforce areas from minimum to maximum wing (from the FVehicleSpec). */
+	float MinDragArea = 0.75f;
+	float MinLiftArea = 2.2f;
+	float MaxDragArea = 0.98f;
+	float MaxLiftArea = 4.0f;
 
 	float DragArea = MinDragArea;
 	float LiftArea = MinLiftArea;

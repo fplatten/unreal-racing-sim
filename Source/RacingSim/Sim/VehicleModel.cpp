@@ -1,4 +1,6 @@
 #include "Sim/VehicleModel.h"
+#include "Sim/TrackSpline.h"
+#include "Misc/CommandLine.h"
 
 namespace
 {
@@ -13,6 +15,54 @@ namespace
 		}
 		return Scale;
 	}
+}
+
+FVehicleSpec FVehicleSpec::Formula()
+{
+	// 600 kg with the driver, 4.42 m (14.5 ft) long, 2.90 m wheelbase, 2.00 m wide over the tires,
+	// ~700 hp, 215 mph flat out without a tow, 0-100 mph in about 3.5 s, 5-6 g on the brakes from
+	// top speed (~110-125 m to stop)
+	FVehicleSpec S;
+	S.Type = ECarType::Formula;
+	S.Mass = 600.f;
+	// 2.90 m wheelbase, 55% of the weight on the rear axle; front track 1.69 m, rear 1.61 m: 2.00 m
+	// over the 0.30 / 0.38 m wide tires
+	S.FrontAxleX = 1.60f;
+	S.RearAxleX = -1.30f;
+	S.FrontHalfTrack = 0.845f;
+	S.RearHalfTrack = 0.805f;
+	// the collider runs from the front wing to the rear wing
+	S.BodyLength = 4.42f;
+	S.BodyCenterAhead = 0.24f;
+	// carbon brakes: enough for all the grip at top speed with full downforce (~6 g), 42% on the
+	// front like the grip (55% of the weight and 60% of the downforce on the wider rear tires)
+	S.BrakeTorqueFront = 2900.f;
+	S.BrakeTorqueRear = 4000.f;
+	S.MaxBrakeDecel = 58.f;
+	// slicks under downforce; the rear ones are wider (0.38 m against 0.30 m)
+	S.RearGrip = 1.25f;
+	S.TireMu = 1.90f;
+	S.TireLoadSensitivity = 0.06f;
+	// 1,000-1,500 kg of downforce at 165-200 mph; the drag sets the 215 mph top speed at minimum wing
+	S.MinDragArea = 0.82f;
+	S.MinLiftArea = 2.9f;
+	S.MaxDragArea = 1.0f;
+	S.MaxLiftArea = 3.4f;
+	// ~700 hp at 12,000 rpm; peak power in top gear at 215 mph, the limiter ~220 mph in a tow
+	S.TorqueNm = { 208, 237, 322, 378, 421, 445, 445, 416, 378 };
+	S.FinalDrive = 3.92f;
+	S.RoadFinalDrive = 3.92f;
+	return S;
+}
+
+FVehicleSpec FVehicleSpec::ForTrack()
+{
+	FString Key;
+	FParse::Value(FCommandLine::Get(), TEXT("Car="), Key);
+	const bool bFormula = Key.IsEmpty() ? FTrackSpline::IsRoadCourse() : !Key.Equals(TEXT("indy"), ESearchCase::IgnoreCase);
+	FVehicleSpec S = bFormula ? Formula() : Indy();
+	if (FTrackSpline::IsRoadCourse()) S.FinalDrive = S.RoadFinalDrive;
+	return S;
 }
 
 float FVehicleSpec::EngineTorque(float Rpm) const
