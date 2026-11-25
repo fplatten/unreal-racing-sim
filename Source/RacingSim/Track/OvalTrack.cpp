@@ -69,10 +69,12 @@ AOvalTrack::AOvalTrack()
 	GroundCollider->SetCollisionProfileName(TEXT("BlockAll"));
 	GroundCollider->SetMobility(EComponentMobility::Static);
 	GroundCollider->SetHiddenInGame(true);
-	// static components cannot move once registered: place it here (2 km square, top at GroundZ)
+	// static components cannot move once registered: place it here (2 km square, top at GroundZ;
+	// on a road course 2 m below its lowest point)
 	const FVector C = Spline.GetCenter();
+	const float FloorZ = FTrackSpline::IsOval() ? GroundZ : -2.f;
 	GroundCollider->SetBoxExtent(FVector(2000.f * 100.f, 2000.f * 100.f, 100.f));
-	GroundCollider->SetRelativeLocation(FVector(C.X * 100.f, C.Y * 100.f, GroundZ * 100.f - 100.f));
+	GroundCollider->SetRelativeLocation(FVector(C.X * 100.f, C.Y * 100.f, FloorZ * 100.f - 100.f));
 }
 
 AOvalTrack* AOvalTrack::Get(const UWorld* World)
@@ -158,9 +160,16 @@ void AOvalTrack::Build()
 	Line = MakeUnique<FRacingLine>(&Spline);
 
 	FMeshBuilder Asphalt, AsphaltVis, PaintMb, GrassMb, WallMb, FenceMb, Deco;
-	BuildSurface(Asphalt, AsphaltVis, PaintMb, GrassMb, WallMb);
-	BuildFence(FenceMb);
-	BuildDecorations(Deco);
+	if (FTrackSpline::IsOval())
+	{
+		BuildSurface(Asphalt, AsphaltVis, PaintMb, GrassMb, WallMb);
+		BuildFence(FenceMb);
+		BuildDecorations(Deco);
+	}
+	else
+	{
+		BuildRoadCourse(Asphalt, AsphaltVis, PaintMb, GrassMb, WallMb, Deco);
+	}
 
 	// the surfaces double as the static collider, as in the Java version
 	// the collider keeps the coarse road; the visible road is finely subdivided for the rubber groove
@@ -186,7 +195,8 @@ void AOvalTrack::Build()
 	DecoMesh->SetMaterial(0, MakeMaterial(Surf, nullptr, nullptr, nullptr, 0.45f, 0.6f, White));
 	TrackMesh->SetPhysMaterialOverride(MakePhysMat(this, 0.6f, 0.1f));
 
-	BuildGround();
+	if (FTrackSpline::IsOval()) BuildGround();
+	else BuildTerrain();
 	GroundCollider->SetPhysMaterialOverride(MakePhysMat(this, 0.5f, 0.05f));
 }
 
@@ -511,7 +521,9 @@ float AOvalTrack::Groove(float S, float D) const
 	// darkest and narrowest through the turns, with two darker wheel tracks there; wider and
 	// fainter on the straights; the amount varies a little along the lap
 	if (D < FTrackSpline::RoadInner - 0.01f || D > FTrackSpline::RoadOuter) return 0.f;
-	const float Turn = Spline.Bank(S) / FTrackSpline::BankAngle;   // 0 on the straights, 1 in the turns
+	// 0 on the straights, 1 in the turns (a road course: tighter than ~120 m)
+	const float Turn = FTrackSpline::IsOval() ? Spline.Bank(S) / FTrackSpline::BankAngle
+		: FMath::Clamp(FMath::Abs(Spline.Curvature(S)) * 120.f, 0.f, 1.f);
 	const float X = FMath::Abs(D - Line->Offset(S));
 	const float Core = 1.0f + 0.9f * (1.f - Turn);
 	const float Feather = 1.5f + 0.8f * (1.f - Turn);

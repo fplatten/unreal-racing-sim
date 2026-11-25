@@ -21,7 +21,12 @@ public:
 	FLinearColor Color(float X, float Y) const;
 	/** 0..1 woodland density at (x, y) with track offset d. */
 	float WoodDensity(float X, float Y, float D) const;
-	float OffsetAt(float X, float Y) const { return Track->Project(FVector(X, Y, 0)).D; }
+	/** Track offset d at (x, y); on a road course the distance either side (no infield there). */
+	float OffsetAt(float X, float Y) const
+	{
+		const float D = Track->Project(FVector(X, Y, 0)).D;
+		return FTrackSpline::IsOval() ? D : FMath::Abs(D);
+	}
 
 	static float Fbm(float X, float Y, int32 Octaves, int32 Seed);
 	static float Noise(float X, float Y, int32 Seed);

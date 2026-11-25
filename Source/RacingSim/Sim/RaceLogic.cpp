@@ -1,4 +1,5 @@
 #include "Sim/RaceLogic.h"
+#include "Misc/CommandLine.h"
 
 // ----------------------------------------------------------------------------- FRacingLine
 
@@ -7,17 +8,37 @@ namespace
 	constexpr float Spread = 140.f;
 	constexpr float Resolution = 2.f;
 	constexpr float MaxSpeed = 150.f;
+	/** Road course braking: the brakes' limit (m/s^2), and how much of the grip the AI plans to use
+	 *  (tuning: -AiBrakeGrip=). */
+	constexpr float RoadBrakeLimit = 36.f;
+	float BrakeConfidence()
+	{
+		static const float C = [] { float V = 0.82f; FParse::Value(FCommandLine::Get(), TEXT("AiBrakeGrip="), V); return V; }();
+		return C;
+	}
 }
 
 FRacingLine::FRacingLine(const FTrackSpline* InTrack)
 	: Track(InTrack)
 {
+	if (!FTrackSpline::IsOval())
+	{
+		BuildRoadLine();
+		return;
+	}
 	for (float Start : Track->TurnStarts()) Centers.Add(Start + FTrackSpline::Turn / 2.f);
 	HalfWidth = FTrackSpline::Turn / 2.f + Spread;
 }
 
 float FRacingLine::Offset(float S) const
 {
+	if (Offsets.Num() > 0)
+	{
+		const float X = FTrackSpline::WrapS(S) / Step;
+		const int32 I = FMath::Min((int32)X, Offsets.Num() - 1);
+		const float T = X - I;
+		return Offsets[I] + (Offsets[(I + 1) % Offsets.Num()] - Offsets[I]) * T;
+	}
 	float W = 0.f;
 	for (float C : Centers)
 	{
@@ -25,6 +46,90 @@ float FRacingLine::Offset(float S) const
 		if (X < 1.f) W = FMath::Max(W, 0.5f * (1.f + FMath::Cos(UE_PI * X)));
 	}
 	return High + (Low - High) * W;
+}
+
+float FRacingLine::PathCurvature(float S) const
+{
+	if (Curv.Num() == 0) return Track->Curvature(S);
+	const float X = FTrackSpline::WrapS(S) / Step;
+	const int32 I = FMath::Min((int32)X, Curv.Num() - 1);
+	const float T = X - I;
+	return Curv[I] + (Curv[(I + 1) % Curv.Num()] - Curv[I]) * T;
+}
+
+void FRacingLine::BuildRoadLine()
+{
+	// Minimum curvature: each point of the line is pulled toward the straight line between its
+	// neighbours (Gauss-Seidel with over-relaxation), within the road less EdgeMargin. Solved on
+	// an 8 m spacing first (the long-range shape of each turn), then refined every 2 m.
+	const int32 M = FMath::RoundToInt(FTrackSpline::Length / 2.f);
+	Step = FTrackSpline::Length / M;
+	const float Lim = FTrackSpline::RoadOuter - EdgeMargin;
+	TArray<FVector2D> C, R;
+	C.SetNum(M);
+	R.SetNum(M);
+	for (int32 i = 0; i < M; i++)
+	{
+		const FVector P = Track->Centerline(i * Step), Rt = Track->Right(i * Step);
+		C[i] = FVector2D(P.X, P.Y);
+		R[i] = FVector2D(Rt.X, Rt.Y);
+	}
+	Offsets.SetNumZeroed(M);
+	auto Relax = [&](int32 Stride, int32 Iterations, float Omega)
+	{
+		const int32 K = M / Stride;
+		for (int32 It = 0; It < Iterations; It++)
+		{
+			for (int32 j = 0; j < K; j++)
+			{
+				const int32 Ia = ((j + K - 1) % K) * Stride, I = j * Stride, Ib = ((j + 1) % K) * Stride;
+				const FVector2D Pa = C[Ia] + R[Ia] * Offsets[Ia], P = C[I] + R[I] * Offsets[I], Pb = C[Ib] + R[Ib] * Offsets[Ib];
+				// the point on the chord at the same fraction of the way along
+				const float La = FTrackSpline::DeltaS(Ia * Step, I * Step), Lb = FTrackSpline::DeltaS(I * Step, Ib * Step);
+				const FVector2D Target = Pa + (Pb - Pa) * (La / FMath::Max(La + Lb, 1e-3f));
+				const float Move = FVector2D::DotProduct(Target - P, R[I]);
+				Offsets[I] = FMath::Clamp(Offsets[I] + Omega * Move, -Lim, Lim);
+			}
+		}
+		if (Stride > 1)
+		{
+			// fill in between the solved points
+			for (int32 j = 0; j < K; j++)
+			{
+				const int32 I = j * Stride, Ib = ((j + 1) % K) * Stride;
+				const int32 Span = (j + 1 < K) ? Stride : M - I;
+				for (int32 k = 1; k < Span; k++) Offsets[(I + k) % M] = FMath::Lerp(Offsets[I], Offsets[Ib], k / (float)Span);
+			}
+		}
+	};
+	Relax(4, 4000, 1.6f);
+	Relax(1, 2500, 1.6f);
+	// curvature of the line itself
+	Curv.SetNumZeroed(M);
+	for (int32 i = 0; i < M; i++)
+	{
+		const int32 Ia = (i + M - 1) % M, Ib = (i + 1) % M;
+		const FVector2D Pa = C[Ia] + R[Ia] * Offsets[Ia], P = C[i] + R[i] * Offsets[i], Pb = C[Ib] + R[Ib] * Offsets[Ib];
+		const FVector2D A = P - Pa, B = Pb - P;
+		const float Turn = FMath::Atan2(A.X * B.Y - A.Y * B.X, A.X * B.X + A.Y * B.Y);   // + = turning toward +y (right)
+		Curv[i] = -Turn / FMath::Max(0.5f * (float)(A.Size() + B.Size()), 1e-3f);
+	}
+	TArray<float> Smoothed = Curv;
+	for (int32 i = 0; i < M; i++)
+	{
+		float Acc = 0.f, W = 0.f;
+		for (int32 k = -4; k <= 4; k++)
+		{
+			const float Wk = FMath::Exp(-0.5f * FMath::Square(k / 2.f));
+			Acc += Wk * Curv[(i + k + M) % M];
+			W += Wk;
+		}
+		Smoothed[i] = Acc / W;
+	}
+	Curv = MoveTemp(Smoothed);
+	float MinR = TNumericLimits<float>::Max();
+	for (float K : Curv) if (FMath::Abs(K) > 1e-6f) MinR = FMath::Min(MinR, 1.f / FMath::Abs(K));
+	UE_LOG(LogTemp, Display, TEXT("Racing line: %d points, tightest radius %.1f m"), M, MinR);
 }
 
 // --------------------------------------------------------------------------- FSpeedProfile
@@ -37,6 +142,20 @@ FSpeedProfile::FSpeedProfile(const FRacingLine* InLine, const FVehicleSpec& InSp
 	Speeds.SetNumUninitialized(N);
 	const float M = Spec.Mass;
 	const float K = 0.5f * FAeroModel::AirDensity * Aero.LiftArea;
+	if (!FTrackSpline::IsOval())
+	{
+		BuildRoad(Speeds, [this](float S) { return Line->PathCurvature(S); }, K);
+		for (int32 L = 0; L < NumLanes; L++)
+		{
+			const float D = (L - NumLanes / 2) * LaneSpacing;
+			BuildRoad(LaneSpeeds[L], [&Track, D](float S)
+			{
+				const float Kc = Track.Curvature(S);
+				return Kc / FMath::Max(1.f + Kc * D, 0.1f);
+			}, K);
+		}
+		return;
+	}
 	for (int32 i = 0; i < N; i++)
 	{
 		const float S = i * Resolution;
@@ -53,6 +172,54 @@ FSpeedProfile::FSpeedProfile(const FRacingLine* InLine, const FVehicleSpec& InSp
 			if (Allowed < Speeds[i]) Speeds[i] = Allowed;
 		}
 	}
+}
+
+void FSpeedProfile::BuildRoad(TArray<float>& Out, TFunctionRef<float(float)> CurvatureAt, float K) const
+{
+	// Corner speeds, then backwards from every corner: how fast the car can arrive and still
+	// slow down in time. The braking grip grows with downforce, but whatever the turn already
+	// asks of the tires is not available for braking (friction circle), and braking downhill
+	// takes longer (the runs downhill into the valley and the hairpins).
+	const FTrackSpline& Track = Line->GetTrack();
+	const int32 N = FMath::CeilToInt(FTrackSpline::Length / Resolution);
+	const float M = Spec.Mass, G = 9.81f;
+	TArray<float> Kabs;
+	Kabs.SetNumUninitialized(N);
+	Out.SetNumUninitialized(N);
+	for (int32 i = 0; i < N; i++)
+	{
+		const float Kp = FMath::Abs(CurvatureAt(i * Resolution));
+		Kabs[i] = Kp;
+		Out[i] = Kp < 1e-4f ? MaxSpeed : CornerSpeed(M, 1.f / Kp, 0.f, GripFactor, K);
+	}
+	// the brakes manage about 4 g; the AI aims a little short of the grip
+	for (int32 Pass = 0; Pass < 2; Pass++)
+	{
+		for (int32 i = N - 1; i >= 0; i--)
+		{
+			const float Next = Out[(i + 1) % N];
+			const float GripAcc = GripFactor * (G + K * Next * Next / M);
+			const float Lat = Next * Next * Kabs[i];
+			const float Used = FMath::Clamp(Lat / GripAcc, 0.f, 0.95f);
+			float Decel = FMath::Min(GripAcc * BrakeConfidence(), RoadBrakeLimit) * FMath::Sqrt(1.f - Used * Used);
+			Decel = FMath::Max(Decel + G * Track.Grade(i * Resolution), 2.f);
+			const float Allowed = FMath::Sqrt(Next * Next + 2.f * Decel * Resolution);
+			if (Allowed < Out[i]) Out[i] = Allowed;
+		}
+	}
+}
+
+float FSpeedProfile::LaneAt(float S, float D) const
+{
+	if (LaneSpeeds[0].Num() == 0) return At(S);
+	const float X = FMath::Clamp(D / LaneSpacing + NumLanes / 2, 0.f, NumLanes - 1.001f);
+	const int32 L = (int32)X;
+	const float U = X - L;
+	const float P = FTrackSpline::WrapS(S) / Resolution;
+	const int32 I = FMath::Min((int32)P, LaneSpeeds[L].Num() - 1);
+	const float T = P - I;
+	auto Sample = [I, T](const TArray<float>& A) { return A[I] + (A[(I + 1) % A.Num()] - A[I]) * T; };
+	return Sample(LaneSpeeds[L]) * (1.f - U) + Sample(LaneSpeeds[L + 1]) * U;
 }
 
 FSpeedProfile FSpeedProfile::WithAero(const FAeroModel& Aero) const
@@ -244,6 +411,7 @@ void FPitStop::Reset()
 
 bool FPitStop::InBox(int32 InStall, float S, float D)
 {
+	if (!FTrackSpline::IsOval()) return false;
 	const float R = PitLane::Rel(S), Start = PitLane::StallStart(InStall);
 	return R > Start + 0.5f && R < Start + PitLane::StallLength - 0.5f
 		&& D < PitLane::FastLaneInner - 0.5f && D > PitLane::BoxInner + 1.f;

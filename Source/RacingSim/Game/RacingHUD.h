@@ -39,6 +39,7 @@ private:
 	void DrawMenu(ARacingGameMode* Gm);
 	void DrawRaceHud(ARacingGameMode* Gm, const FRaceSnapshot& R, const FCarSnapshot& C);
 	void DrawPit(ARacingGameMode* Gm, const FRaceSnapshot& R, const FCarSnapshot& C);
+	void DrawStartLights(const FRaceSnapshot& R);
 	void DrawSteeringWheel(float Steer, bool bMouseSteering);
 	void DrawResults(ARacingGameMode* Gm, const FRaceSnapshot& R);
 	void DrawConfirm(ARacingGameMode* Gm);

@@ -108,7 +108,7 @@ void AScenery::Place(UStaticMesh* Mesh, float S, float D, bool bOutside)
 	const FTrackSpline& Spline = Track->GetSpline();
 	const FVector F = Spline.Forward(S), R = Spline.Right(S);
 	FVector Pos = Spline.Centerline(S) + R * D;
-	Pos.Z = 0;
+	Pos.Z = GroundAt(Pos);
 	Occupied.Add(Pos);
 	if (!Mesh) return;
 	const FMatrix Axes = bOutside ? FMatrix(-F, -R, FVector::UpVector, FVector::ZeroVector) : FMatrix(F, R, FVector::UpVector, FVector::ZeroVector);
@@ -129,7 +129,7 @@ void AScenery::PlaceChord(UStaticMesh* Mesh, float SLo, float SHi, float D)
 	const FTrackSpline& Spline = Track->GetSpline();
 	FVector Hi = Spline.Centerline(SHi) + Spline.Right(SHi) * D;
 	FVector Lo = Spline.Centerline(SLo) + Spline.Right(SLo) * D;
-	Hi.Z = Lo.Z = 0;
+	Hi.Z = Lo.Z = FMath::Min(GroundAt(Hi), GroundAt(Lo));
 	FVector X = Lo - Hi;
 	const float Len = X.Size();
 	X /= Len;
@@ -146,12 +146,116 @@ void AScenery::PlaceChord(UStaticMesh* Mesh, float SLo, float SHi, float D)
 	Comp->RegisterComponent();
 }
 
+float AScenery::GroundAt(const FVector& Pos) const
+{
+	return FTrackSpline::IsOval() ? 0.f : Track->GroundHeight(Pos.X, Pos.Y) - 0.1f;
+}
+
+void AScenery::MakeTreeComponents()
+{
+	// one instanced mesh per species and leaf tint
+	for (int32 Sp = 0; Sp < NumSpecies; Sp++)
+	{
+		TreeMeshes.Add(LoadMesh(TreeFiles[Sp]));
+		for (int32 Ti = 0; Ti < NumTints; Ti++)
+		{
+			UHierarchicalInstancedStaticMeshComponent* H = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
+			H->SetStaticMesh(TreeMeshes.Last());
+			H->SetMobility(EComponentMobility::Static);
+			H->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			H->SetCullDistances(0, 120000);
+			H->SetupAttachment(GetRootComponent());
+			if (TreeMeshes.Last()) ApplyMaterials(H, Ti);
+			H->RegisterComponent();
+			TreeInstances.Add(H);
+		}
+	}
+}
+
+void AScenery::PlaceStands(UStaticMesh* Mesh, float S0, float S1, bool bRight, float Back)
+{
+	// grandstand modules along s0..s1 just behind the wall on one side, following the bends
+	const FTrackSpline& Spline = Track->GetSpline();
+	for (float S = S0; S + Module <= S1 + 1.f; S += Module)
+	{
+		float D = bRight ? -1e9f : 1e9f;
+		for (float Q = S; Q <= S + Module; Q += 4.f) D = bRight ? FMath::Max(D, Spline.MaxD(Q)) : FMath::Min(D, Spline.MinD(Q));
+		D += bRight ? Back : -Back;
+		if (bRight) PlaceChord(Mesh, FTrackSpline::WrapS(S), FTrackSpline::WrapS(S + Module), D);
+		else PlaceChord(Mesh, FTrackSpline::WrapS(S + Module), FTrackSpline::WrapS(S), D);
+	}
+}
+
+int32 AScenery::BuildRoadCourse()
+{
+	// stands along the start / finish straight and round the first-turn hairpin, the paddock and
+	// timing tower on the left of the grid, stands beside the valley sweep and at the last
+	// chicane, and forest everywhere else
+	const FTrackSpline& Spline = Track->GetSpline();
+	UStaticMesh* Grandstand = LoadMesh(TEXT("grandstand"));
+	PlaceStands(Grandstand, -240.f, 40.f, true, 4.f);       // opposite the pits
+	PlaceStands(Grandstand, 120.f, 280.f, false, 5.f);      // round the outside of the first-turn hairpin
+	PlaceStands(Grandstand, 700.f, 860.f, false, 6.f);      // the valley sweep
+	PlaceStands(Grandstand, 6580.f, 6700.f, true, 5.f);     // the last chicane
+	{
+		float D = 1e9f;
+		for (float Q = -160.f; Q <= 40.f; Q += 5.f) D = FMath::Min(D, Spline.MinD(Q));
+		Place(LoadMesh(TEXT("timing_tower")), FTrackSpline::WrapS(-60.f), D - 30.f, false);
+		UStaticMesh* Tent = LoadMesh(TEXT("tent"));
+		for (int32 i = 0; i < 6; i++) Place(Tent, FTrackSpline::WrapS(-200.f + i * 22.f), D - 22.f - (i % 2) * 14.f, false);
+	}
+	MakeTreeComponents();
+	const int32 Planted = PlantForest();
+	for (UHierarchicalInstancedStaticMeshComponent* H : TreeInstances) H->BuildTreeIfOutdated(false, true);
+	UE_LOG(LogTemp, Display, TEXT("Scenery: %d trees and shrubs"), Planted);
+	return Planted;
+}
+
+int32 AScenery::PlantForest()
+{
+	// spruce and broadleaf woods in patches on the hills, from a little way past the barriers to
+	// where the terrain turns to distant forest
+	const FTrackSpline& Spline = Track->GetSpline();
+	float MinX = TNumericLimits<float>::Max(), MaxX = -MinX, MinY = MinX, MaxY = -MinX;
+	for (float S = 0; S < FTrackSpline::Length; S += 10.f)
+	{
+		const FVector Pc = Spline.Centerline(S);
+		MinX = FMath::Min(MinX, (float)Pc.X); MaxX = FMath::Max(MaxX, (float)Pc.X);
+		MinY = FMath::Min(MinY, (float)Pc.Y); MaxY = FMath::Max(MaxY, (float)Pc.Y);
+	}
+	int32 Planted = 0;
+	const float Step = 15.f, Reach = 330.f;
+	for (float X = MinX - Reach; X < MaxX + Reach; X += Step)
+	{
+		for (float Y = MinY - Reach; Y < MaxY + Reach; Y += Step)
+		{
+			const float Px = X + (Rnd.NextFloat() - 0.5f) * Step * 0.8f;
+			const float Py = Y + (Rnd.NextFloat() - 0.5f) * Step * 0.8f;
+			float S;
+			const float Beyond = Track->BeyondWall(Px, Py, S);
+			if (Beyond < 14.f || Beyond > Reach) continue;
+			const float Patches = FGroundShade::Fbm(Px / 170.f, Py / 170.f, 3, 51);
+			const float Density = FTrackSpline::Smooth((Patches + 0.3f * FTrackSpline::Smooth((Beyond - 14.f) / 90.f) - 0.42f) / 0.2f);
+			if (Rnd.NextFloat() > Density * 0.85f) continue;
+			FVector Pos(Px, Py, 0);
+			if (TooClose(Pos, 18.f)) continue;
+			Pos.Z = GroundAt(Pos);
+			const float U = Rnd.NextFloat();
+			const int32 Species = U < 0.45f ? Spruce : U < 0.68f ? Oak : U < 0.88f ? Maple : Young;
+			const float Scale = 0.85f + Rnd.NextFloat() * 0.45f;
+			Planted += Plant(Species, Pos, Scale);
+		}
+	}
+	return Planted;
+}
+
 int32 AScenery::Build(const AOvalTrack* InTrack)
 {
 	Track = InTrack;
 	using T = FTrackSpline;
 	const FTrackSpline& Spline = Track->GetSpline();
 	Center = Spline.GetCenter();
+	if (FTrackSpline::IsRoadCourse()) return BuildRoadCourse();
 
 	UStaticMesh* Grandstand = LoadMesh(TEXT("grandstand"));
 	// front straight: the whole straight, so the starting grid always has stands behind it
@@ -183,23 +287,7 @@ int32 AScenery::Build(const AOvalTrack* InTrack)
 		Place(Tower, SIn, FMath::Min(-32.f, PitLane::InnerLimit(SIn) - 12.f), false);
 	}
 
-	// trees: one instanced mesh per species and leaf tint
-	for (int32 Sp = 0; Sp < NumSpecies; Sp++)
-	{
-		TreeMeshes.Add(LoadMesh(TreeFiles[Sp]));
-		for (int32 Ti = 0; Ti < NumTints; Ti++)
-		{
-			UHierarchicalInstancedStaticMeshComponent* H = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
-			H->SetStaticMesh(TreeMeshes.Last());
-			H->SetMobility(EComponentMobility::Static);
-			H->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-			H->SetCullDistances(0, 120000);
-			H->SetupAttachment(GetRootComponent());
-			if (TreeMeshes.Last()) ApplyMaterials(H, Ti);
-			H->RegisterComponent();
-			TreeInstances.Add(H);
-		}
-	}
+	MakeTreeComponents();
 	const int32 Planted = PlantTrees();
 	for (UHierarchicalInstancedStaticMeshComponent* H : TreeInstances) H->BuildTreeIfOutdated(false, true);
 
@@ -219,7 +307,8 @@ int32 AScenery::Plant(int32 Species, const FVector& Pos, float Scale)
 	const float Yaw = Rnd.NextFloat() * 360.f;
 	const float Tall = 0.9f + Rnd.NextFloat() * 0.2f;
 	UHierarchicalInstancedStaticMeshComponent* H = TreeInstances[Species * NumTints + Tint];
-	H->AddInstance(FTransform(FRotator(0, Yaw, 0), FVector(Pos.X, Pos.Y, -0.05f) * 100.0, FVector(Scale, Scale, Scale * Tall)), true);
+	const float Z = FTrackSpline::IsOval() ? -0.05f : Pos.Z;
+	H->AddInstance(FTransform(FRotator(0, Yaw, 0), FVector(Pos.X, Pos.Y, Z) * 100.0, FVector(Scale, Scale, Scale * Tall)), true);
 	return 1;
 }
 

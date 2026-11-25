@@ -18,6 +18,9 @@
  *    and swerve only when braking cannot prevent a hit.
  *  - Also: keeping clear of cars alongside, a little more room for the human player, the
  *    rolling-start formation and pit stops.
+ *  - On a road course the same race craft with the turns' own directions (the inside of a
+ *    right-hander is the right), braking zones ahead of the turns, the speed profile of the
+ *    lane in use when off the racing line, and a standing start.
  *  The race craft departs from the Java AIDriver, which passed on any free side and swerved
  *  rather than braking; the steering, speed control and pit stops are still its port.
  */
@@ -69,8 +72,8 @@ public:
 		// why the off-line ticks were off the line
 		int64 OffPassing = 0, OffEmergency = 0, OffHolding = 0, OffAvoiding = 0, OffReturning = 0, OffTracking = 0;
 		// line-following error (d - racing line, m) by 50 m of track, while nothing asks for another lane
-		double TrackErrSum[96] = {};
-		int64 TrackErrCount[96] = {};
+		double TrackErrSum[160] = {};
+		int64 TrackErrCount[160] = {};
 	};
 	static FStats Stats;
 
@@ -114,6 +117,15 @@ private:
 	bool bTurnPasser = false;    // veterans: passes in the chutes and turns, side by side through a turn
 	bool bPassTight = false;     // statistics: the current pass began in a turn or a short stretch
 	float TurnExitDistance(float S) const;
+	/** How far before a turn counts as "the turn is near" at speed V. */
+	float TurnApproach(float V) const;
+	/** For passing: in a turn worth racing for, and the distance to the next one (a road course:
+	 *  to the next braking zone). */
+	bool PassTurn(float S) const;
+	float PassTurnDist(float S) const;
+	mutable float CachedBrakeS = -1.f, CachedBrakeDist = 0.f;
+	/** The lanes this car may use (d of its center). */
+	float DMin = -5.6f, DMax = 5.7f;
 	float PassLane = 0.f;
 	float LaneD = 0.f;
 	float LaneWeight = 0.f;

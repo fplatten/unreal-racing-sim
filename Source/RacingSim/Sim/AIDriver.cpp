@@ -2,8 +2,9 @@
 
 namespace
 {
-	constexpr float DMin = -5.6f;
-	constexpr float DMax = 5.7f;
+	/** Road course: how far ahead (s) the speed target looks, per m/s: the brakes are applied a
+	 *  moment before the braking curve is reached rather than chasing it. */
+	constexpr float RoadSpeedLead = 0.2f;
 	constexpr float CarWidthClearance = 2.9f;
 	constexpr float PassOffset = 3.6f;
 	/** Lateral distance below which a car ahead is considered "in our lane" (2 m wide cars). */
@@ -23,6 +24,9 @@ namespace
 	constexpr float WeightRate = 0.9f;
 	/** Like a real rolling start, the field holds station until it has strung out. */
 	constexpr float NoPassingTime = 14.f;
+	/** A standing start: no passing moves for the first few seconds (cars hold their grid lane
+	 *  until they can merge, and follow the car ahead). */
+	constexpr float RoadNoPassingTime = 4.f;
 	/** End of turn 2 relative to the start/finish line (where the opening-lap formation ends). */
 	constexpr float Turn2ExitRel = FTrackSpline::Straight / 2 + 2 * FTrackSpline::Turn + FTrackSpline::Chute + 40.f;
 	constexpr float CurvatureGain = 18.f;
@@ -88,6 +92,17 @@ FAIDriver::FAIDriver(FCarCore* InCar, const FRacingLine* InLine, const FSpeedPro
 	: Car(InCar), Track(&InLine->GetTrack()), Line(InLine), Profile(InProfile), Aggression(FMath::Clamp(InAggression, 0.f, 1.f))
 {
 	ReadTuning();
+	// the lanes a car may use: the oval's road edges keep a car's width off the apron and the wall
+	if (FTrackSpline::IsOval())
+	{
+		DMin = -5.6f;
+		DMax = 5.7f;
+	}
+	else
+	{
+		DMin = FTrackSpline::RoadInner + 1.5f;
+		DMax = FTrackSpline::RoadOuter - 1.5f;
+	}
 	// Rookie (0): textbook passes only, from the tow with plenty of closing speed and done well
 	// before the turn, given up as soon as they stall. Veteran (1): pulls out with less, will
 	// pass in the short chutes and into the turns and go side by side through them.
@@ -102,6 +117,9 @@ FAIDriver::FAIDriver(FCarCore* InCar, const FRacingLine* InLine, const FSpeedPro
 
 int32 FAIDriver::PreferredWing(int32 Steps, int32 Jitter) const
 {
+	// road course: downforce is lap time everywhere but the long straight, so everyone runs a
+	// lot of it: rookies all of it (10), veterans trim a little off for the straights (8-9)
+	if (FTrackSpline::IsRoadCourse()) return FMath::Clamp(FMath::RoundToInt((1.f - 0.15f * Aggression) * Steps) + FMath::Min(Jitter, 0), 0, Steps);
 	// rookies run more wing (stable, slower), veterans less (fast, loose): 5 .. 1 of 10, +-1. (A
 	// rookie on 8-9 was ~1.5 s a lap off the pace: a full field swarmed them, three wide.)
 	return FMath::Clamp(FMath::RoundToInt((0.5f - 0.4f * Aggression) * Steps) + Jitter, 0, Steps);
@@ -110,12 +128,40 @@ int32 FAIDriver::PreferredWing(int32 Steps, int32 Jitter) const
 float FAIDriver::TurnExitDistance(float S) const
 {
 	// distance to the exit of the turn we are in, or else of the next one
-	for (float Start : Track->TurnStarts())
+	return Track->DistanceToTurnExit(S);
+}
+
+bool FAIDriver::PassTurn(float S) const
+{
+	// a road course's flat-out kinks and fast sweeps are not turns to race for
+	return FTrackSpline::IsOval() ? Track->InTurn(S) : FMath::Abs(Track->Curvature(S)) > 1.f / 250.f;
+}
+
+float FAIDriver::PassTurnDist(float S) const
+{
+	if (FTrackSpline::IsOval()) return Track->DistanceToNextTurn(S);
+	if (PassTurn(S)) return 0.f;
+	if (S == CachedBrakeS) return CachedBrakeDist;
+	// road course: the next braking zone (where this car has to slow down noticeably)
+	const float V = FMath::Max(Car->ForwardSpeed(), Profile.At(S));
+	CachedBrakeS = S;
+	CachedBrakeDist = 1500.f;
+	for (float X = 0.f; X < 1500.f; X += 10.f)
 	{
-		const float Into = FTrackSpline::DeltaS(Start, S);
-		if (Into >= 0.f && Into < FTrackSpline::Turn) return FTrackSpline::Turn - Into;
+		if (Profile.At(S + X) < V - 6.f || PassTurn(S + X))
+		{
+			CachedBrakeDist = X;
+			break;
+		}
 	}
-	return Track->DistanceToNextTurn(S) + FTrackSpline::Turn;
+	return CachedBrakeDist;
+}
+
+float FAIDriver::TurnApproach(float V) const
+{
+	// "the turn is near": 80 m on the oval (lifting, at most a dab of the brakes); on a road
+	// course the distance is to the braking zone already
+	return FTrackSpline::IsOval() ? 80.f : 60.f;
 }
 
 void FAIDriver::SetDownforceLevel(float Level)
@@ -129,8 +175,10 @@ void FAIDriver::ResetForRace()
 	ResetLane();
 	RaceTime = 0.f;
 	GridLane = Car->TrackD();
-	bFormationDone = false;
-	bReadyToRelease = false;
+	// a standing start has no formation: everyone races from the green, merging into line as
+	// soon as there is room
+	bFormationDone = FTrackSpline::IsRoadCourse();
+	bReadyToRelease = FTrackSpline::IsRoadCourse();
 	bMergeHold = false;
 }
 
@@ -242,15 +290,15 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 	// wide), and a car that is simply faster may go by without a tow.
 	RaceTime += Dt;
 	PassCooldown = FMath::Max(0.f, PassCooldown - Dt);
-	const bool bPassingAllowed = bFormationDone && !bMergeHold && RaceTime > NoPassingTime && PassCooldown <= 0.f;
+	const bool bPassingAllowed = bFormationDone && !bMergeHold && RaceTime > (FTrackSpline::IsOval() ? NoPassingTime : RoadNoPassingTime) && PassCooldown <= 0.f;
 	const FCarCore* DraftRunTarget = nullptr;
 	const FCarCore* SetupTarget = nullptr;
 	// Every driver wants the place ahead. Through the turns, hang back a little (out of the dirty
 	// air, still in the tow) to get a run at the car ahead on the next straight.
-	if (bPassingAllowed && !PassTarget && Blocker && BlockerGap < 40.f && Track->InTurn(S)) SetupTarget = Blocker;
+	if (bPassingAllowed && !PassTarget && Blocker && BlockerGap < 40.f && PassTurn(S)) SetupTarget = Blocker;
 	// (veterans will also start one on the exit of a turn)
-	const bool bTurnExit = Track->InTurn(S) && TurnExitDistance(S) < FTrackSpline::Turn / 2.f;
-	if (bPassingAllowed && !PassTarget && Blocker && (!Track->InTurn(S) || (bTurnPasser && bTurnExit)))
+	const bool bTurnExit = PassTurn(S) && TurnExitDistance(S) < (FTrackSpline::IsOval() ? FTrackSpline::Turn / 2.f : 50.f);
+	if (bPassingAllowed && !PassTarget && Blocker && (!PassTurn(S) || (bTurnPasser && bTurnExit)))
 	{
 		const float Closing = V - Blocker->ForwardSpeed();
 		const bool bTowing = Car->GetDraftFactor() > DraftForPass;
@@ -268,14 +316,14 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		const float ClosingSpeed = FMath::Max(Closing, bTowing ? RoomClosing : 0.3f);
 		const float PassDistance = (BlockerGap + 10.f) / ClosingSpeed * FMath::Max(V, 1.f);
 		const float RoomLeft = bTurnPasser ? TurnExitDistance(S) - 40.f
-			: (Track->InTurn(S) ? 0.f : Track->DistanceToNextTurn(S) - RoomMargin);
+			: (PassTurn(S) ? 0.f : PassTurnDist(S) - RoomMargin);
 		const bool bRoom = PassDistance < RoomLeft;
 		const float Lane = (bRoom && !HasCompany(Blocker, Field)) ? ChoosePassLane(Blocker, Field) : NAN;
 		if (!FMath::IsNaN(Lane))
 		{
 			// A pass is on, but sitting at the usual following distance the tow builds no speed:
 			// close right up in it (a "run"), and the slingshot follows once we are closing.
-			if (bTowing && !bSlingshot && !bFaster && !Track->InTurn(S)) DraftRunTarget = Blocker;
+			if (bTowing && !bSlingshot && !bFaster && !PassTurn(S)) DraftRunTarget = Blocker;
 			else if (bSlingshot || bFaster)
 			{
 				PassTarget = Blocker;
@@ -284,7 +332,7 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 				bPassFromDraft = bTowing;
 				bEmergencyMove = false;
 				// a pass begun in a turn or with less than a long straight's worth of road left
-				bPassTight = Track->InTurn(S) || Track->DistanceToNextTurn(S) < 300.f;
+				bPassTight = PassTurn(S) || PassTurnDist(S) < 300.f;
 				Stats.PassStarts++;
 				Stats.ClosingAtStart += Closing;
 				if (bTowing) Stats.DraftPassStarts++;
@@ -294,8 +342,8 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 	if (PassTarget)
 	{
 		const float Ds = FTrackSpline::DeltaS(S, PassTarget->TrackS());
-		const bool bOutside = PassLane > PassTarget->TrackD();
-		const bool bTurnNear = Track->InTurn(S) || Track->DistanceToNextTurn(S) < 80.f;
+		const bool bOutside = (PassLane - PassTarget->TrackD()) * Track->TurnDirection(S) > 0.f;
+		const bool bTurnNear = PassTurn(S) || PassTurnDist(S) < TurnApproach(V);
 		// not far enough ahead on the outside as the turn arrives (a rookie wants to be well clear,
 		// a veteran stays out there once alongside): back out and tuck in behind
 		// A rookie does not go side by side into a turn on either side: clear ahead, or back out.
@@ -306,8 +354,16 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		// not alongside yet as the turn arrives: no dive-bomb on the inside, from anyone (a veteran
 		// alongside by then may carry the pass side by side through the turn; only a veteran
 		// keeps a pass going in a turn at all)
-		const bool bTurnAhead = !Track->InTurn(S) && Track->DistanceToNextTurn(S) < 80.f;
-		const bool bTooLate = !bEmergencyMove && Ds > 4.f && (bTurnAhead || (Track->InTurn(S) && !bTurnPasser));
+		const bool bTurnAhead = !PassTurn(S) && PassTurnDist(S) < TurnApproach(V);
+		bool bTooLate = !bEmergencyMove && Ds > 4.f && (bTurnAhead || (PassTurn(S) && !bTurnPasser));
+		if (FTrackSpline::IsRoadCourse())
+		{
+			// road course: a pass is made on the brakes - alongside on the inside as the braking
+			// zone arrives (nose at least level with its sidepods), carry it into the turn; on the
+			// outside, be ahead; in the turn itself only a veteran keeps a pass going that is not
+			// yet ahead
+			bTooLate = !bEmergencyMove && ((bTurnAhead && Ds > (bOutside ? 3.f : 6.f)) || (PassTurn(S) && !bTurnPasser && Ds > 2.f));
+		}
 		// out of the tow and not gaining before even drawing alongside: give up and tuck back in
 		// (a rookie as soon as it stalls, a veteran only once losing ground)
 		const float Gain = V - PassTarget->ForwardSpeed();
@@ -324,7 +380,7 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 					const int32 Type = Aggression < 0.34f ? 0 : Aggression < 0.67f ? 1 : 2;
 					Stats.PassesByType[Type]++;
 					// finished inside a turn: carried side by side through it
-					if (Track->InTurn(S)) Stats.TightPassesByType[Type]++;
+					if (PassTurn(S)) Stats.TightPassesByType[Type]++;
 				}
 				else
 				{
@@ -457,8 +513,8 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 			}
 		}
 	}
-	// inside the turns stay off the wall: understeer in traffic pushes cars up the banking
-	const float DMaxHere = (Track->InTurn(S) || Track->DistanceToNextTurn(S) < 60.f) ? DMax - 0.8f : DMax;
+	// inside the oval's turns stay off the wall: understeer in traffic pushes cars up the banking
+	const float DMaxHere = FTrackSpline::IsOval() && (Track->InTurn(S) || Track->DistanceToNextTurn(S) < 60.f) ? DMax - 0.8f : DMax;
 	DesiredLane = FMath::Clamp(DesiredLane, DMin, DMaxHere);
 
 	// smooth lateral target
@@ -476,6 +532,14 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 
 	// ---------------- speed control ----------------
 	float VTarget = Profile.At(S + 4.f);
+	if (FTrackSpline::IsRoadCourse())
+	{
+		// look a little further ahead for the braking points; off the racing line (passing,
+		// defending, side by side) the turn is tighter, so slower
+		const float Ahead = S + 4.f + RoadSpeedLead * FMath::Max(V, 0.f);
+		VTarget = Profile.At(Ahead);
+		if (LaneWeight > 0.05f) VTarget = FMath::Lerp(VTarget, FMath::Min(VTarget, Profile.LaneAt(Ahead, LaneD)), FMath::Min(1.f, LaneWeight));
+	}
 	const bool bCornering = Track->InTurn(S) || Track->DistanceToNextTurn(S) < 150.f;
 	if (bCornering)
 	{
@@ -488,7 +552,7 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 	VTarget = FMath::Min(VTarget, SpeedCap);
 	ApplySpeed(VTarget, S, D, IntendedNow);
 	// statistics: hard braking in a turn, by what asked for it (0 the speed profile, 1+ CapCause)
-	if (bFormationDone && Track->InTurn(S) && Car->Input().Brake > 0.3f) Stats.TurnBrakeTicks[VTarget < SpeedCap - 0.01f || CapCause < 0 ? 0 : CapCause + 1]++;
+	if (bFormationDone && FTrackSpline::IsOval() && Track->InTurn(S) && Car->Input().Brake > 0.3f) Stats.TurnBrakeTicks[VTarget < SpeedCap - 0.01f || CapCause < 0 ? 0 : CapCause + 1]++;
 
 	// stuck detection (crashed / facing the wall)
 	if (FMath::Abs(V) < 3.f) StuckTime += Dt; else StuckTime = 0.f;
@@ -500,7 +564,7 @@ void FAIDriver::Update(float Dt, const TArray<FCarCore*>& Field)
 		if (Car->GetDraftFactor() < 0.01f) Stats.CleanAirTop = FMath::Max(Stats.CleanAirTop, V);
 		if (!PassTarget && !bAvoiding && !bHolding && LaneWeight <= 0.05f)
 		{
-			const int32 Bin = FMath::Clamp((int32)(FTrackSpline::WrapS(S) / 50.f), 0, 95);
+			const int32 Bin = FMath::Clamp((int32)(FTrackSpline::WrapS(S) / 50.f), 0, UE_ARRAY_COUNT(Stats.TrackErrSum) - 1);
 			Stats.TrackErrSum[Bin] += D - Line->Offset(S);
 			Stats.TrackErrCount[Bin]++;
 		}
@@ -598,7 +662,8 @@ void FAIDriver::ApplySpeed(float VTarget, float S, float D, float Intended)
 	else
 	{
 		Throttle = 0.f;
-		Brake = FMath::Clamp(-Err * 0.12f, 0.f, 1.f);
+		// (a road course's braking zones want the brakes on firmly at once)
+		Brake = FMath::Clamp(-Err * (FTrackSpline::IsOval() ? 0.12f : 0.3f), 0.f, 1.f);
 		if (FMath::Abs(V) < 1.5f) Brake = FMath::Min(Brake, HoldBrake);   // never engage reverse
 	}
 	// oversteer: the rear is sliding more than the front -> feed throttle in gently
@@ -779,26 +844,29 @@ void FAIDriver::UpdatePit(float Dt, const TArray<FCarCore*>& Field)
 
 float FAIDriver::ChoosePassLane(const FCarCore* Blocker, const TArray<FCarCore*>& Field) const
 {
-	float Inside = Blocker->TrackD() - PassOffset;
-	float Outside = Blocker->TrackD() + PassOffset;
+	float Low = Blocker->TrackD() - PassOffset;
+	float High = Blocker->TrackD() + PassOffset;
+	auto Usable = [this, Blocker, &Field](float Lane) { return Lane >= DMin && Lane <= DMax && !LaneBlocked(Lane, Blocker, Field, -12.f, 20.f); };
 	// a car moving across the track: go behind it, i.e. to the side it is leaving
 	const float Drift = Blocker->LateralRate;
 	if (FMath::Abs(Drift) > 1.0f)
 	{
-		if (Drift > 0) Inside = FMath::Min(Inside, Blocker->TrackD() - PassOffset - 1.f);
-		else Outside = FMath::Max(Outside, Blocker->TrackD() + PassOffset + 1.f);
-		const bool bPreferInside = Drift > 0;
-		const float First = bPreferInside ? Inside : Outside, Second = bPreferInside ? Outside : Inside;
-		if (First >= DMin && First <= DMax && !LaneBlocked(First, Blocker, Field, -12.f, 20.f)) return First;
-		if (Second >= DMin && Second <= DMax && !LaneBlocked(Second, Blocker, Field, -12.f, 20.f)) return Second;
+		if (Drift > 0) Low = FMath::Min(Low, Blocker->TrackD() - PassOffset - 1.f);
+		else High = FMath::Max(High, Blocker->TrackD() + PassOffset + 1.f);
+		const float First = Drift > 0 ? Low : High, Second = Drift > 0 ? High : Low;
+		if (Usable(First)) return First;
+		if (Usable(Second)) return Second;
 		return NAN;
 	}
-	const bool bInsideOk = Inside >= DMin && !LaneBlocked(Inside, Blocker, Field, -12.f, 20.f);
-	const bool bOutsideOk = Outside <= DMax && !LaneBlocked(Outside, Blocker, Field, -12.f, 20.f);
+	// the inside of the coming turn (the oval's are all left-handers: low)
+	const float S = Car->TrackS();
+	const bool bLeft = Track->TurnDirection(S) > 0.f;
+	const float Inside = bLeft ? Low : High, Outside = bLeft ? High : Low;
+	const bool bInsideOk = Usable(Inside);
+	const bool bOutsideOk = Usable(Outside);
 	if (bInsideOk && bOutsideOk)
 	{
-		const float S = Car->TrackS();
-		const bool bTurnSoon = Track->DistanceToNextTurn(S) < 350.f || Track->InTurn(S);
+		const bool bTurnSoon = PassTurnDist(S) < 350.f || PassTurn(S);
 		if (bTurnSoon) return Inside;
 		return FMath::Abs(Inside - Car->TrackD()) <= FMath::Abs(Outside - Car->TrackD()) ? Inside : Outside;
 	}

@@ -25,9 +25,9 @@ void FWallContactFilter::OnContactModification_Internal(Chaos::FCollisionContact
 			Pair.GetWorldContactLocations(i, L0, L1);
 			const FVector Pt = (L0 + L1) * 0.5 / 100.0;
 			const FTrackSpline::FTrackPos Tp = Track->Project(Pt);
-			const bool bBeyond = Tp.D > FTrackSpline::RoadOuter - 0.15f || Tp.D < FTrackSpline::ApronInner;
+			const bool bBeyond = Track->BeyondWalls(Tp.S, Tp.D, 0.15f);
 			// on the wall face itself, not the road surface at its foot
-			const float AboveRoad = Pt.Z - Track->Height(Tp.S, FMath::Min(Tp.D, FTrackSpline::RoadOuter));
+			const float AboveRoad = Pt.Z - Track->Height(Tp.S, FMath::Clamp(Tp.D, Track->MinD(Tp.S), Track->MaxD(Tp.S)));
 			if (!bBeyond || AboveRoad < 0.05f) continue;
 			N.Z = 0;
 			const Chaos::FReal Len = N.Size();

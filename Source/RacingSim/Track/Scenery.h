@@ -16,6 +16,9 @@ class UProceduralMeshComponent;
  * - covered grandstands along both straights, the timing tower, hospitality tents, light towers -
  * and the woods: about 3,500 trees and shrubs placed exactly as in the Java version (same
  * Random(1990) sequence), plus two rings of tree-line silhouettes that close off the horizon.
+ * Round the road course: stands at the start, the first-turn hairpin, the valley sweep and the
+ * last chicane, the paddock,
+ * and woods on the hills.
  */
 UCLASS()
 class RACINGSIM_API AScenery : public AActor
@@ -43,6 +46,12 @@ private:
 	bool OnServiceRoad(const FVector& P) const;
 	bool TooClose(const FVector& P, float Min) const;
 	void Treeline(float D, float Height, const FLinearColor* Haze, float UShift);
+	void MakeTreeComponents();
+	int32 BuildRoadCourse();
+	int32 PlantForest();
+	void PlaceStands(UStaticMesh* Mesh, float S0, float S1, bool bRight, float Back);
+	/** Ground height (m) for a prop at a world position. */
+	float GroundAt(const FVector& Pos) const;
 
 	const AOvalTrack* Track = nullptr;
 	FJavaRandom Rnd{ 1990 };

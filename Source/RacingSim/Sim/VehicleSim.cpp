@@ -6,6 +6,16 @@ void FTrackSurface::Sample(const FVector& P, float& OutZ, FVector& OutNormal, bo
 {
 	const FTrackSpline::FTrackPos Tp = Track->Project(P);
 	const float S = Tp.S, D = Tp.D;
+	if (FTrackSpline::IsRoadCourse())
+	{
+		// the road course: one surface across the road, kerbs and run-off (and on past the walls,
+		// so a car that gets over one still has ground under it); the kerbs grip like the road
+		OutZ = Track->Height(S, D);
+		OutNormal = Track->SurfaceNormal(S, D);
+		const float Edge = FTrackSpline::RoadOuter + (Track->KerbAt(S, D > 0.f) ? FTrackSpline::KerbWidth : 0.25f);
+		bOutOnTrack = FMath::Abs(D) <= Edge;
+		return;
+	}
 	const bool bLaneRow = PitLane::InExitLane(S);
 	const bool bPitRow = PitLane::InPitRoad(S);
 	const float InnerEdge = bLaneRow ? PitLane::LaneInnerAt(S) : bPitRow ? PitLane::BackDAt(S) : FTrackSpline::InnerWall;
@@ -50,6 +60,9 @@ float FTrackSurface::Cast(const FVector& From, const FVector& Dir, float MaxDist
 FVehicleSim::FVehicleSim(const FVehicleSpec& InSpec, const FTrackSurface* InSurface)
 	: Spec(InSpec), Surface(InSurface), Gearbox(&Spec)
 {
+	// road course gearing: shorter, for the slow turns and the climb up the long straight
+	// (~205 mph on the limiter instead of ~243)
+	if (FTrackSpline::IsRoadCourse()) Spec.FinalDrive = RoadFinalDrive;
 	FParse::Value(FCommandLine::Get(), TEXT("FinalDrive="), Spec.FinalDrive);   // tuning
 	const float Mh = Spec.MountHeight;
 	// Java mounts (+x = left) -> Unreal (+y = right)

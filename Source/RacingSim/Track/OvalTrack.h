@@ -13,8 +13,10 @@ class UBoxComponent;
 class UMaterialInterface;
 
 /**
- * The oval: geometry (TrackSpline), what the wheels stand on (FTrackSurface) and the
- * procedurally built meshes and colliders (port of com.racingsim.track.TrackBuilder).
+ * The track: geometry (TrackSpline), what the wheels stand on (FTrackSurface) and the
+ * procedurally built meshes and colliders (port of com.racingsim.track.TrackBuilder). The oval,
+ * or the road course (built in RoadCourse.cpp) with the hills around it,
+ * whichever FTrackSpline::Layout says.
  */
 UCLASS()
 class RACINGSIM_API AOvalTrack : public AActor
@@ -38,6 +40,11 @@ public:
 	/** Builds meshes and colliders (called once by BeginPlay). */
 	void Build();
 
+	/** Height (m) of the land at a world (x, y): the hills around a road course, flat round the oval. */
+	float GroundHeight(float X, float Y) const;
+	/** Road course: how far (m) a world (x, y) is beyond the nearest wall (negative: inside it). */
+	float BeyondWall(float X, float Y, float& OutS) const;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
@@ -48,6 +55,8 @@ private:
 
 	void BuildSurface(class FMeshBuilder& Asphalt, FMeshBuilder& AsphaltVis, FMeshBuilder& Paint, FMeshBuilder& Grass, FMeshBuilder& Wall) const;
 	void BuildGround();
+	void BuildRoadCourse(FMeshBuilder& Asphalt, FMeshBuilder& AsphaltVis, FMeshBuilder& Paint, FMeshBuilder& Grass, FMeshBuilder& Wall, FMeshBuilder& Deco) const;
+	void BuildTerrain();
 	float Groove(float S, float D) const;
 	float SurfaceVariation(float S, float D) const;
 	float GrooveShade(float S, float D) const;
@@ -66,6 +75,10 @@ private:
 	TUniquePtr<FGroundShade> Shade;
 	TUniquePtr<FRacingLine> Line;
 	bool bBuilt = false;
+	// road course terrain heights (m) on a grid
+	TArray<float> Terrain;
+	float TerrainX0 = 0.f, TerrainY0 = 0.f, TerrainCell = 12.f;
+	int32 TerrainNx = 0, TerrainNy = 0;
 	class FWallContactFilter* WallFilter = nullptr;
 
 	UPROPERTY(VisibleAnywhere)

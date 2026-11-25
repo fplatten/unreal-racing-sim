@@ -44,6 +44,17 @@ namespace
 		TEXT("Lighting the sky"), TEXT("Building the 2.5-mile oval"), TEXT("Raising the grandstands"),
 		TEXT("Starting the race director"), TEXT("Rolling out the field"), TEXT("Tuning the engines"), TEXT("Warming up the tires") };
 	constexpr int32 NumLoadSteps = UE_ARRAY_COUNT(LoadSteps);
+	/** The loading step's text (the track and scenery steps name the track being built). */
+	FString LoadStepText(int32 Step)
+	{
+		if (FTrackSpline::IsRoadCourse())
+		{
+			if (Step == 1) return TEXT("Building the 4.352-mile road course");
+			if (Step == 2) return TEXT("Planting the forest");
+			if (Step == 4) return TEXT("Lining up the grid");
+		}
+		return LoadSteps[Step];
+	}
 
 	/**
 	 * Low warm golden-hour sun, sky, sky light and haze (stands in for the Java Environment class:
@@ -193,25 +204,31 @@ bool FMenuSettings::Change(int32 Delta)
 {
 	switch (Row)
 	{
-	case 0:
+	case TrackRow:
+		Track = Track == ETrackLayout::Oval ? ETrackLayout::Road : ETrackLayout::Oval;
+		Downforce = DefaultDownforce(Track);
+		CustomLaps = -1;
+		if (!HasPits()) PitStops = 0;
+		break;
+	case 1:
 		CustomLaps = -1;
 		LapIndex = (LapIndex + Delta + 2) % 2;
 		break;
-	case 1:
+	case 2:
 		Opponents = FMath::Clamp(Opponents + Delta, MinOpponents, MaxOpponents);
 		StartPosition = FMath::Min(StartPosition, FieldSize());
 		break;
-	case 2:
+	case 3:
 		StartPosition = FMath::Clamp(StartPosition + Delta, 1, FieldSize());
 		break;
-	case 3:
-		PitStops = FMath::Clamp(PitStops + Delta, 0, MaxPitStops);
+	case PitRow:
+		PitStops = HasPits() ? FMath::Clamp(PitStops + Delta, 0, MaxPitStops) : 0;
 		break;
 	default:
 		Downforce = FMath::Clamp(Downforce + Delta, 0, DownforceSteps);
 		break;
 	}
-	return Row == 1 || Row == 2;
+	return Row == 2 || Row == 3;
 }
 
 ARacingGameMode::ARacingGameMode()
@@ -239,6 +256,15 @@ void ARacingGameMode::StartPlay()
 		Menu.Opponents = 0;
 		Menu.StartPosition = 1;
 	}
+	// the track: ?Track= (the menu reloads the level with it and the other settings), else -Track=
+	{
+		FString TrackKey;
+		FParse::Value(Cmd, TEXT("Track="), TrackKey);
+		if (UGameplayStatics::HasOption(OptionsString, TEXT("Track"))) TrackKey = UGameplayStatics::ParseOption(OptionsString, TEXT("Track"));
+		Menu.Track = FTrackSpline::LayoutFromKey(TrackKey);
+		FTrackSpline::SelectLayout(Menu.Track);
+		Menu.Downforce = FMenuSettings::DefaultDownforce(Menu.Track);
+	}
 	bAutopilot = FParse::Param(Cmd, TEXT("Autopilot"));
 	bQuickStart = FParse::Param(Cmd, TEXT("QuickStart"));
 	bShotMenu = FParse::Param(Cmd, TEXT("ShotMenu"));
@@ -248,6 +274,16 @@ void ARacingGameMode::StartPlay()
 	FParse::Value(Cmd, TEXT("Pits="), Menu.PitStops);
 	FParse::Value(Cmd, TEXT("Downforce="), Menu.Downforce);
 	if (FParse::Value(Cmd, TEXT("Laps="), Laps) && Laps > 0) Menu.CustomLaps = Laps;
+	// settings carried over a change of track
+	if (UGameplayStatics::HasOption(OptionsString, TEXT("Track")))
+	{
+		Menu.Opponents = UGameplayStatics::GetIntOption(OptionsString, TEXT("Opponents"), Menu.Opponents);
+		Menu.StartPosition = UGameplayStatics::GetIntOption(OptionsString, TEXT("Start"), Menu.StartPosition);
+		Menu.LapIndex = FMath::Clamp(UGameplayStatics::GetIntOption(OptionsString, TEXT("LapIndex"), Menu.LapIndex), 0, 1);
+		Menu.Downforce = UGameplayStatics::GetIntOption(OptionsString, TEXT("Downforce"), Menu.Downforce);
+		Menu.Row = FMenuSettings::TrackRow;
+	}
+	if (!Menu.HasPits()) Menu.PitStops = 0;
 	FParse::Value(Cmd, TEXT("Cars="), SimCars);
 	FParse::Value(Cmd, TEXT("Seconds="), CheckSeconds);
 	Menu.Opponents = FMath::Clamp(Menu.Opponents, bWallCheck ? 0 : FMenuSettings::MinOpponents, FMenuSettings::MaxOpponents);
@@ -269,7 +305,7 @@ void ARacingGameMode::StartPlay()
 	bShotNoHud = FParse::Param(Cmd, TEXT("ShotNoHud"));
 
 	Super::StartPlay();
-	SplashStatus = FString(LoadSteps[0]) + TEXT("...");
+	SplashStatus = LoadStepText(0) + TEXT("...");
 	if (APlayerController* P = Pc())
 	{
 		P->SetInputMode(FInputModeGameOnly());
@@ -349,7 +385,7 @@ void ARacingGameMode::LoadingTick(float Dt)
 	{
 		LoadStep++;
 		SplashTarget = LoadStep / (float)(NumLoadSteps + 1);
-		SplashStatus = FString(LoadSteps[FMath::Min(LoadStep, NumLoadSteps - 1)]) + TEXT("...");
+		SplashStatus = LoadStepText(FMath::Min(LoadStep, NumLoadSteps - 1)) + TEXT("...");
 	}
 }
 
@@ -539,7 +575,22 @@ void ARacingGameMode::GetConfirmText(FString& Title, FString& Message, FString& 
 
 void ARacingGameMode::ChangeSetting(int32 Dir)
 {
+	if (bReloading) return;
+	const bool bTrack = Menu.Row == FMenuSettings::TrackRow;
 	if (Menu.Change(Dir)) BuildField();
+	if (bTrack) ReloadForTrack();
+}
+
+void ARacingGameMode::ReloadForTrack()
+{
+	// a different track is a different world: load the level again (the splash shows while the
+	// new track is built), carrying the menu over
+	bReloading = true;
+	HeldDirection = 0;
+	const FString Options = FString::Printf(TEXT("Track=%s?Opponents=%d?Start=%d?LapIndex=%d?Downforce=%d"),
+		FTrackSpline::LayoutKey(Menu.Track), Menu.Opponents, Menu.StartPosition, Menu.LapIndex, Menu.Downforce);
+	UE_LOG(LogRacingSim, Display, TEXT("Switching track: %s"), *Options);
+	UGameplayStatics::OpenLevel(GetWorld(), FName(*UGameplayStatics::GetCurrentLevelName(GetWorld(), true)), true, Options);
 }
 
 void ARacingGameMode::ToggleQuality()
@@ -634,7 +685,9 @@ void ARacingGameMode::OrbitGrid(float Dt)
 	ARaceDirector::GridSlot(Cars / 2, FMath::Max(Cars, 1), MidS, Dummy);
 	const float Sweep = FMath::Sin(OrbitAngle);
 	const FTrackSpline& Spline = Track->GetSpline();
-	const FVector Eye = Spline.Point(MidS + 32.f * Sweep, -13.f + 3.f * FMath::Cos(OrbitAngle * 0.7f)) + FVector(0, 0, 4.5f);
+	// (the oval: from the infield; a road course: from the run-off on the left)
+	const float EyeD = FTrackSpline::IsOval() ? -13.f : FMath::Max(Spline.MinD(MidS) + 2.f, -11.f);
+	const FVector Eye = Spline.Point(MidS + 32.f * Sweep, EyeD + 3.f * FMath::Cos(OrbitAngle * 0.7f)) + FVector(0, 0, 4.5f);
 	const FVector Center = Spline.Point(MidS + 8.f * Sweep, 0.5f) + FVector(0, 0, 0.4f);
 	MenuCam->SetActorLocationAndRotation(Eye * 100.0, (Center - Eye).Rotation());
 }
@@ -841,7 +894,7 @@ void ARacingGameMode::LogClassification()
 	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI passing: closing speed at pull-out %.1f m/s; abandoned: not gaining %d, too late for the turn %d, yielded on the outside %d, lane closed %d"),
 		A.PassStarts ? A.ClosingAtStart / A.PassStarts : 0.0, A.AbortStall, A.AbortLate, A.AbortYield, A.AbortBlocked);
 	FString Err;
-	for (int32 i = 0; i < 96; i++) if (A.TrackErrCount[i]) Err += FString::Printf(TEXT(" %d:%+.1f"), i * 50, A.TrackErrSum[i] / A.TrackErrCount[i]);
+	for (int32 i = 0; i < UE_ARRAY_COUNT(A.TrackErrCount); i++) if (A.TrackErrCount[i]) Err += FString::Printf(TEXT(" %d:%+.1f"), i * 50, A.TrackErrSum[i] / A.TrackErrCount[i]);
 	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI line error by s:%s"), *Err);
 }
 

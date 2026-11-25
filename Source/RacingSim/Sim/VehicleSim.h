@@ -14,6 +14,7 @@
  *    median marked as grass;
  *  - anywhere else (infield, outside the outer wall, on top of a wall): the ground plane
  *    just below the apron, which is grass.
+ * On a road course: the road (with its slopes), the kerbs through the turns, and grass run-off.
  */
 class RACINGSIM_API FTrackSurface
 {
@@ -81,6 +82,8 @@ public:
 	static constexpr float ImpactLiftKeep = 0.2f;
 	static constexpr float ImpactDv = 0.6f;
 	static constexpr float ImpactDw = 0.4f;
+	/** Final drive on a road course (the oval's is FVehicleSpec::FinalDrive). */
+	static constexpr float RoadFinalDrive = 4.2f;
 
 	struct FWheel
 	{

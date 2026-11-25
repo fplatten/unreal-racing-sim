@@ -2,6 +2,8 @@
 
 An Unreal Engine 5.8 port of [racing-sim](https://github.com/fplatten/racing-sim), the jMonkeyEngine open-wheel oval racing sim: a 2.5-mile banked oval, up to 33 cars with AI drivers, drafting, pit stops and a rolling start, three abreast.
 
+A second track, the **Road** course: a 4.352-mile (7,004 m) clockwise road course traced from a circuit map, with 102.2 m of elevation (down into a valley, up a steep climb and a long straight to the summit, then down through the hairpins and sweeps to the lowest point), kerbs, grass run-off, barriers, wooded hills, and a standing start behind five red lights. Choose OVAL or ROAD on the menu's TRACK row (the level reloads) or with `-Track=road`. The AI drives a minimum-curvature racing line with braking points worked out from grip, downforce, the turn and the slope; cars run road-course gearing and more wing there. The road course has no pit lane, so pit stops are oval only. How the layout was made: `Scripts/road_track/`.
+
 The vehicle dynamics are a line-by-line C++ port of the Java model (raycast suspension, Pacejka tires, aero with drafting, gearbox, crash energy absorption), run at a fixed 240 Hz on Unreal's physics thread. The race director steps the whole field each tick, in the same order as the Java version.
 
 ## Play
@@ -18,7 +20,7 @@ Controls: `W`/`S` throttle and brake, `A`/`D` steer (click the mouse wheel for m
 
 Racing wheels and pedals work out of the box: DirectInput wheels (Logitech, Thrustmaster, Fanatec and most others) and XInput devices (Xbox pads and wheels in Xbox mode). The wheel steers, the pedals are throttle and brake, the paddles shift, and the wheel's buttons and D-pad work the menus. Wheels with force feedback get a centering spring that stiffens with speed. To remap axes or buttons, invert the steering or change the force feedback, copy `controller.properties.example` to `controller.properties` next to `RacingSim.exe` and edit it; the wheel and its axes are written to the log when it connects.
 
-Command line: `-Opponents=7 -Start=6 -Laps=5 -Pits=0 -Downforce=0` preset the menu, `-QuickStart` skips it, `-Autopilot` lets the AI drive your car, `-MouseSensitivity=1.5` scales mouse steering, and `-AudioDebug` logs the sound mixer's state once a second (in Development builds).
+Command line: `-Track=road` races on the road course, `-Opponents=7 -Start=6 -Laps=5 -Pits=0 -Downforce=0` preset the menu, `-QuickStart` skips it, `-Autopilot` lets the AI drive your car, `-MouseSensitivity=1.5` scales mouse steering, and `-AudioDebug` logs the sound mixer's state once a second (in Development builds).
 
 No sound? If the log says `InitializeHardware() failed. Falling back to null device`, Windows refused the speakers: untick *Allow applications to take exclusive control of this device* in the speaker's Advanced properties, or restart the Windows Audio service.
 
@@ -47,7 +49,7 @@ UnrealEditor-Cmd.exe RacingSim.uproject /Game/Maps/Oval -game -nullrhi -nosound 
 UnrealEditor-Cmd.exe RacingSim.uproject /Game/Maps/Oval -game -nullrhi -nosound -WallCheck
 ```
 
-`-SimCheck` races an all-AI field, as the Java `gradlew simCheck -Pplayer=ai` does, and prints the lap times, contacts and classification, plus the AI's race craft: time off the racing line (and why), time three wide, passes started, completed and abandoned, and emergency moves. Add `-Seconds=600` for longer races (the default stops after 260 s). For tuning, `-AiGrip=`, `-AiGripSpread=`, `-AiDownforce=`, `-AiWingMax=`, `-AiSling=`, `-AiStallGain=`, `-AiPullOut=`, `-AiDirtyAir=`, `-AiLookBase=`, `-AiLookK=`, `-AiLatGain=`, `-AiLatDamp=`, `-AiRunGap=`, `-AiRunDecel=`, `-AiRunPull=`, `-AiRoomClose=` and `-AiSetupGap=` override the AI's settings (see `Sim/AIDriver.cpp`), and `-PowerScale=` scales every car's engine. `-WallCheck` fires a car into the wall 54 ways, as the Java `gradlew wallCheck` does.
+`-SimCheck` races an all-AI field, as the Java `gradlew simCheck -Pplayer=ai` does, and prints the lap times, contacts and classification, plus the AI's race craft: time off the racing line (and why), time three wide, passes started, completed and abandoned, and emergency moves. Add `-Seconds=600` for longer races (the default stops after 260 s). For tuning, `-AiGrip=`, `-AiGripSpread=`, `-AiDownforce=`, `-AiWingMax=`, `-AiSling=`, `-AiStallGain=`, `-AiPullOut=`, `-AiDirtyAir=`, `-AiLookBase=`, `-AiLookK=`, `-AiLatGain=`, `-AiLatDamp=`, `-AiRunGap=`, `-AiRunDecel=`, `-AiRunPull=`, `-AiRoomClose=` and `-AiSetupGap=` override the AI's settings (see `Sim/AIDriver.cpp`), `-AiBrakeGrip=` sets how much of the grip the AI brakes with on a road course, `-Track=road` runs the check on the road course, and `-PowerScale=` scales every car's engine. `-WallCheck` fires a car into the wall 54 ways, as the Java `gradlew wallCheck` does.
 
 ## Layout
 

@@ -4,11 +4,15 @@
 
 namespace
 {
-	/** Every race starts on the front straight, just off the last turn (rolling start). */
-	constexpr float StraightStartS = FTrackSpline::Length - FTrackSpline::Straight / 2.f;
+	/** Every oval race starts on the front straight, just off the last turn (rolling start). */
+	constexpr float StraightStartS = FTrackSpline::OvalLength - FTrackSpline::Straight / 2.f;
 	const float GridLanes[] = { -4.6f, -0.4f, 3.8f };
 	/** Inside line used when the player resets - well clear of the AI groove on the straights. */
-	constexpr float ResetLane = -6.0f;
+	float ResetLane() { return FTrackSpline::IsOval() ? -6.0f : -4.0f; }
+	/** Standing start (road course): two by two, staggered, the pole 8 m behind the line. */
+	constexpr float PoleGap = 8.f;
+	constexpr float StaggerGap = 7.5f;
+	constexpr float StaggerLane = 3.0f;
 }
 
 ARaceDirector::ARaceDirector()
@@ -104,6 +108,14 @@ int32 ARaceDirector::NextAiStall() const
 
 void ARaceDirector::GridSlot(int32 Slot, int32 CarCount, float& OutS, float& OutD)
 {
+	if (FTrackSpline::IsRoadCourse())
+	{
+		// staggered: pole on the left (the outside line into the first turn, a right-hander),
+		// each car half a row behind the one before it on the other side
+		OutS = FTrackSpline::WrapS(-PoleGap - Slot * StaggerGap);
+		OutD = Slot % 2 == 0 ? -StaggerLane : StaggerLane;
+		return;
+	}
 	const int32 Rows = (CarCount + GridColumns - 1) / GridColumns;
 	const float FrontS = StraightStartS + (Rows - 1) * GridRowGap + 5.f;
 	const int32 Row = Slot / GridColumns, Col = Slot % GridColumns;
@@ -162,7 +174,25 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 	if (bGridPending.exchange(false)) PT_PlaceGrid(0.f);
 	if (bStartPending.exchange(false)) PT_StartRace();
 
-	if (bRunning)
+	// standing start: the field waits on the grid while the five red lights come on, one a
+	// second, and goes when they go out
+	const bool bWaitingForLights = bRunning && LightsTime >= 0.f;
+	if (bWaitingForLights)
+	{
+		LightsTime += Dt;
+		if (LightsTime >= LightsOutAt)
+		{
+			LightsTime = -1.f;
+			GreenTime = 0.f;
+			Laps.StartClock();
+		}
+	}
+	else if (GreenTime >= 0.f)
+	{
+		GreenTime += Dt;
+		if (GreenTime > 3.f) GreenTime = -1.f;
+	}
+	if (bRunning && !bWaitingForLights)
 	{
 		for (int32 i = 0; i < Cars.Num(); i++)
 		{
@@ -180,9 +210,10 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 			Cars[i]->PT_ApplyPlayerInput(Dt);   // tests drive the car with a fixed throttle
 			continue;
 		}
-		if (!bRunning)
+		if (!bRunning || bWaitingForLights)
 		{
-			// lined up on the grid behind the menu: held on the brakes (not hard enough to engage reverse)
+			// lined up on the grid (behind the menu, or waiting for the lights): held on the brakes
+			// (not hard enough to engage reverse)
 			Field[i]->Input().Clear();
 			Field[i]->Input().Brake = 0.45f;
 			continue;
@@ -213,7 +244,7 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 				PT_CheckPlayerRecovery(i, Dt);
 				continue;
 			}
-			const bool bOffTrack = C->D < PitLane::InnerLimit(C->S) - 1.f || C->D > FTrackSpline::RoadOuter + 2.f || C->Body.Pos.Z < -3.f;
+			const bool bOffTrack = C->D < Spline.MinD(C->S) - 1.f || C->D > Spline.MaxD(C->S) + 2.f || C->Body.Pos.Z < -3.f;
 			if (Drivers[i]->NeedsRecovery() || C->Body.Rot.GetUpVector().Z < 0.3f || bOffTrack) PT_Recover(i);
 		}
 	}
@@ -235,7 +266,11 @@ void ARaceDirector::PT_PlaceGrid(float Speed)
 
 void ARaceDirector::PT_StartRace()
 {
-	PT_PlaceGrid(RollingStartSpeed);
+	// the oval: a rolling start, three abreast; a road course: a standing start
+	const bool bStanding = FTrackSpline::IsRoadCourse();
+	PT_PlaceGrid(bStanding ? 0.f : RollingStartSpeed);
+	LightsTime = bStanding ? 0.f : -1.f;
+	GreenTime = -1.f;
 	Laps.NewRace(PendingLaps, PendingStops);
 	for (int32 i = 0; i < Cars.Num(); i++)
 	{
@@ -286,12 +321,13 @@ void ARaceDirector::PT_UpdatePitStops(float Dt)
 void ARaceDirector::PT_ResetPlayer(int32 Index)
 {
 	// restart on the inside lane, clear of the AI groove; move over if an AI car is right there
-	float D = ResetLane;
+	float D = ResetLane();
 	for (const FCarCore* C : Field)
 	{
 		if (C != Field[Index] && FMath::Abs(FTrackSpline::DeltaS(0.f, C->S)) < 12.f && FMath::Abs(C->D - D) < 3.f) D = C->D + 3.5f;
 	}
-	Cars[Index]->PT_Teleport(Track->GetSpline(), 0.f, FMath::Clamp(D, -6.0f, 6.f), 0.f);
+	const float Edge = FTrackSpline::IsOval() ? 6.f : FTrackSpline::RoadOuter - 1.5f;
+	Cars[Index]->PT_Teleport(Track->GetSpline(), 0.f, FMath::Clamp(D, -Edge, Edge), 0.f);
 	Laps.ResetToLine(Entries[Index]);
 }
 
@@ -301,12 +337,14 @@ void ARaceDirector::PT_CheckPlayerRecovery(int32 Index, float Dt)
 	// 3 s is put back on the track where it left it
 	const FCarCore* C = Field[Index];
 	PlayerUpsideDown = C->Body.Rot.GetUpVector().Z < 0.25f ? PlayerUpsideDown + Dt : 0.f;
-	const bool bOutside = C->D > FTrackSpline::RoadOuter + FTrackSpline::OuterWallThickness + 0.5f || C->D < PitLane::InnerLimit(C->S) - 0.5f;
+	const FTrackSpline& Spline = Track->GetSpline();
+	const bool bOutside = C->D > Spline.MaxD(C->S) + (FTrackSpline::IsOval() ? FTrackSpline::OuterWallThickness : 0.f) + 0.5f
+		|| C->D < Spline.MinD(C->S) - 0.5f;
 	PlayerOutside = bOutside ? PlayerOutside + Dt : 0.f;
 	if (C->Body.Pos.Z > -3.f && PlayerUpsideDown < 2.0f && PlayerOutside < 3.0f) return;
 	PlayerUpsideDown = PlayerOutside = 0.f;
 	const float S = FTrackSpline::WrapS(C->S);
-	float D = ResetLane;
+	float D = ResetLane();
 	if (!RejoinClear(C, S, D)) D = FTrackSpline::RoadOuter - 1.5f;
 	Cars[Index]->PT_Teleport(Track->GetSpline(), S, D, 25.f);
 	Laps.Teleport(Entries[Index], S);
@@ -330,7 +368,7 @@ void ARaceDirector::PT_Recover(int32 Index)
 	const FCarCore* C = Field[Index];
 	const float S = FTrackSpline::WrapS(C->S + 5.f);
 	float D = NAN;
-	for (float Candidate : { Line->Offset(S), -5.5f })
+	for (float Candidate : { Line->Offset(S), FTrackSpline::IsOval() ? -5.5f : 0.f })
 	{
 		if (RejoinClear(C, S, Candidate))
 		{
@@ -389,4 +427,6 @@ void ARaceDirector::PT_Publish()
 	Snap.bRunning = bRunning;
 	Snap.bLeaderFinished = Laps.LeaderFinished();
 	Snap.Recoveries = Recoveries;
+	Snap.StartLights = LightsTime >= 0.f ? FMath::Clamp(FMath::FloorToInt(LightsTime / LightInterval) + 1 - 1, 0, 5) : -1;
+	Snap.GreenTime = GreenTime;
 }

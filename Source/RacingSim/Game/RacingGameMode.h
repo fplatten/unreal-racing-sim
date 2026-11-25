@@ -20,11 +20,16 @@ enum class ERaceState : uint8 { Loading, Menu, Race, Results };
 struct FMenuSettings
 {
 	static constexpr int32 RaceLengths[2] = { 5, 10 };
+	/** The road course's laps are almost three times as long as the oval's. */
+	static constexpr int32 RoadRaceLengths[2] = { 3, 5 };
 	static constexpr int32 MinOpponents = 1, MaxOpponents = 32;
 	static constexpr int32 MaxPitStops = 3;
 	static constexpr int32 DownforceSteps = 10;
-	static constexpr int32 Rows = 5, DownforceRow = 4;
+	static constexpr int32 Rows = 6, TrackRow = 0, PitRow = 4, DownforceRow = 5;
+	/** The wing a track starts you on: none on the oval, most of it on the road course. */
+	static int32 DefaultDownforce(ETrackLayout L) { return L == ETrackLayout::Oval ? 0 : 8; }
 
+	ETrackLayout Track = ETrackLayout::Oval;
 	int32 Row = 0;
 	int32 LapIndex = 0;
 	int32 CustomLaps = -1;
@@ -33,9 +38,12 @@ struct FMenuSettings
 	int32 PitStops = 0;
 	int32 Downforce = 0;
 
-	int32 Laps() const { return CustomLaps > 0 ? CustomLaps : RaceLengths[LapIndex]; }
+	int32 Laps() const { return CustomLaps > 0 ? CustomLaps : (Track == ETrackLayout::Oval ? RaceLengths : RoadRaceLengths)[LapIndex]; }
+	/** Pit stops are only run on the oval (it has the pit lane). */
+	bool HasPits() const { return Track == ETrackLayout::Oval; }
 	int32 FieldSize() const { return Opponents + 1; }
-	/** Left / Right on the selected row. @return true if the field (cars / grid) changed */
+	/** Left / Right on the selected row. @return true if the field (cars / grid) changed (a
+	 *  change of track is seen by the caller from the row) */
 	bool Change(int32 Delta);
 };
 
@@ -47,6 +55,8 @@ struct FMenuSettings
  *
  * Command line:
  *   -Opponents=7 -Start=6 -Laps=5 -Pits=0 -Downforce=0   preset the menu
+ *   -Track=road         race on the road course (standing start) instead of the oval; the
+ *                       menu's TRACK row reloads the level with ?Track= and the other settings
  *   -QuickStart         skip the menu and start the race straight away
  *   -Autopilot          the AI drives your car
  *   -SimCheck           headless check like the Java `gradlew simCheck -Pplayer=ai`: an all-AI
@@ -94,6 +104,9 @@ private:
 	void AcceptConfirm();
 	void HandleInput(float Dt);
 	void ChangeSetting(int32 Dir);
+	/** Reloads the level on the track chosen in the menu, keeping the other settings. */
+	void ReloadForTrack();
+	bool bReloading = false;
 	void OrbitGrid(float Dt);
 	void ToggleQuality();
 	void AutomationTick();

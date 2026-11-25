@@ -199,7 +199,8 @@ void ARacingHUD::DrawSplash(ARacingGameMode* Gm, float Opacity)
 	Rect(0, 0, VW, 230, FLinearColor(0, 0, 0, 0.72f));
 	Rect(0, VH * 0.58f, VW, 200, FLinearColor(0, 0, 0, 0.35f));
 	Centered(TEXT("OVAL RACING SIM"), Base * 4.4f, White, VW / 2, VH * 0.58f + 160, true);
-	Centered(TEXT("2.5-MILE OVAL   -   OPEN-WHEEL RACING   -   33-CAR FIELD"), Base * 1.1f, FLinearColor(1.f, 0.85f, 0.35f, 1), VW / 2, VH * 0.58f + 62);
+	Centered(FTrackSpline::IsOval() ? TEXT("2.5-MILE OVAL   -   OPEN-WHEEL RACING   -   33-CAR FIELD")
+		: TEXT("4.352-MILE ROAD COURSE   -   OPEN-WHEEL RACING   -   STANDING START"), Base * 1.1f, FLinearColor(1.f, 0.85f, 0.35f, 1), VW / 2, VH * 0.58f + 62);
 
 	const float BarW = 640.f, BarH = 12.f, BarX = (VW - BarW) / 2, BarY = 120;
 	const float Progress = Gm->GetSplashProgress();
@@ -218,25 +219,27 @@ void ARacingHUD::DrawMenu(ARacingGameMode* Gm)
 {
 	const FMenuSettings& M = Gm->GetMenu();
 	const FLinearColor MenuPanel(0.02f, 0.03f, 0.06f, 0.72f), Idle(1, 1, 1, 0.07f), MenuDim(0.70f, 0.72f, 0.76f, 1);
-	const float Pw = 660, Ph = 708, Px = (VW - Pw) / 2, Py = (VH - Ph) / 2;
+	const float Pw = 660, Ph = 732, Px = (VW - Pw) / 2, Py = (VH - Ph) / 2;
 	Rect(Px, Py, Pw, Ph, MenuPanel);
 	Rect(Px, Py + Ph - 6, Pw, 6, Accent);
 	Centered(TEXT("OVAL RACING SIM"), Base * 3.2f, White, VW / 2, Py + Ph - 30, true);
-	Centered(TEXT("2.5-mile oval  -  open-wheel cars  -  rolling start, three abreast"), Base, MenuDim, VW / 2, Py + Ph - 110);
+	Centered(M.Track == ETrackLayout::Oval ? TEXT("2.5-mile oval  -  open-wheel cars  -  rolling start, three abreast")
+		: TEXT("4.352-mile road course  -  102 m of hills  -  standing start"), Base, MenuDim, VW / 2, Py + Ph - 110);
 	Centered(TEXT("RACE SETUP"), Base * 1.2f, Gold, VW / 2, Py + Ph - 160, true);
 
-	const TCHAR* Labels[] = { TEXT("RACE LENGTH"), TEXT("OPPONENTS"), TEXT("STARTING POSITION"), TEXT("PIT STOPS"), TEXT("DOWNFORCE") };
+	const TCHAR* Labels[] = { TEXT("TRACK"), TEXT("RACE LENGTH"), TEXT("OPPONENTS"), TEXT("STARTING POSITION"), TEXT("PIT STOPS"), TEXT("DOWNFORCE") };
 	const FString Values[] = {
+		M.Track == ETrackLayout::Oval ? FString(TEXT("OVAL")) : FString(TEXT("ROAD")),
 		FString::Printf(TEXT("%d LAPS"), M.Laps()),
 		FString::Printf(TEXT("%d   (%d cars)"), M.Opponents, M.FieldSize()),
 		FString::Printf(TEXT("P%d of %d"), M.StartPosition, M.FieldSize()),
-		M.PitStops == 0 ? FString(TEXT("NONE")) : FString::Printf(TEXT("%d %s"), M.PitStops, M.PitStops == 1 ? TEXT("STOP") : TEXT("STOPS")),
+		!M.HasPits() ? FString(TEXT("N/A")) : M.PitStops == 0 ? FString(TEXT("NONE")) : FString::Printf(TEXT("%d %s"), M.PitStops, M.PitStops == 1 ? TEXT("STOP") : TEXT("STOPS")),
 		FString() };
-	const float BoxW = 560, BoxH = 54, X = VW / 2 - BoxW / 2;
+	const float BoxW = 560, BoxH = 50, X = VW / 2 - BoxW / 2;
 	for (int32 i = 0; i < FMenuSettings::Rows; i++)
 	{
 		const bool bOn = i == M.Row;
-		const float Y = Py + Ph - 250 - i * (BoxH + 14);
+		const float Y = Py + Ph - 250 - i * (BoxH + 10);
 		Rect(X, Y, BoxW, BoxH, bOn ? Accent : Idle);
 		Text(Labels[i], Base * 1.15f, bOn ? White : MenuDim, X + 22, Y + BoxH - 14);
 		if (i != FMenuSettings::DownforceRow)
@@ -263,7 +266,8 @@ void ARacingHUD::DrawMenu(ARacingGameMode* Gm)
 	Centered(TEXT("UP / DOWN choose a setting  -  LEFT / RIGHT change it  -  ENTER start the race"), Base, White, VW / 2, Py + 160);
 	Centered(TEXT("W/Up throttle   S/Down brake   A/D steer (or click mouse wheel: mouse steering)   E/Q shift"), Base * 0.85f, MenuDim, VW / 2, Py + 115);
 	Centered(TEXT("T auto gearbox   R reset to start line   C camera   G graphics quality   H help   Esc quit game"), Base * 0.85f, MenuDim, VW / 2, Py + 87);
-	Centered(TEXT("Pit stops: stop in your yellow box (pit lane off turn 4) and stay put for the 8 s countdown."), Base * 0.85f, MenuDim, VW / 2, Py + 59);
+	Centered(M.Track == ETrackLayout::Oval ? TEXT("Pit stops: stop in your yellow box (pit lane off turn 4) and stay put for the 8 s countdown.")
+		: TEXT("Standing start: wait on the grid until all five red lights go out, then go."), Base * 0.85f, MenuDim, VW / 2, Py + 59);
 	Centered(TEXT("Race in the draft: tuck in behind a car to cut drag and slingshot past."), Base * 0.85f, MenuDim, VW / 2, Py + 31);
 
 	// racing wheel: what is connected and what it reads, so the axes and buttons can be checked
@@ -379,8 +383,30 @@ void ARacingHUD::DrawRaceHud(ARacingGameMode* Gm, const FRaceSnapshot& R, const 
 	DrawSteeringWheel(C.SteerInput, Car->IsMouseSteering());
 }
 
+void ARacingHUD::DrawStartLights(const FRaceSnapshot& R)
+{
+	// standing start: five red lights come on one by one; when they all go out, go
+	const bool bLights = R.StartLights >= 0;
+	const bool bGo = !bLights && R.GreenTime >= 0.f && R.GreenTime < 1.6f;
+	if (!bLights && !bGo) return;
+	const float Spacing = 70.f, Radius = 24.f, Cy = VH - 200.f;
+	const float W = Spacing * 5 + 20.f, X0 = VW / 2 - W / 2;
+	Rect(X0, Cy - Radius - 14.f, W, 2 * Radius + 28.f, FLinearColor(0.02f, 0.02f, 0.025f, 0.9f));
+	for (int32 k = 0; k < 5; k++)
+	{
+		const float Cx = X0 + 10.f + Spacing * (k + 0.5f);
+		const bool bLit = bLights && k < R.StartLights;
+		const FLinearColor Core = bLit ? FLinearColor(1.f, 0.10f, 0.05f, 1.f) : FLinearColor(0.16f, 0.03f, 0.03f, 1.f);
+		const FLinearColor Rim = bLit ? FLinearColor(0.75f, 0.02f, 0.02f, 1.f) : FLinearColor(0.10f, 0.02f, 0.02f, 1.f);
+		Arc(Cx, Cy, 0.f, Radius, -180.f, 180.f, 40, Core, Rim);
+	}
+	if (bGo) Centered(TEXT("GO!"), Base * 3.2f, Go, VW / 2, Cy - Radius - 30.f, true);
+	else if (R.StartLights == 0) Centered(TEXT("STANDING START  -  GET READY"), Base, White, VW / 2, Cy - Radius - 30.f);
+}
+
 void ARacingHUD::DrawPit(ARacingGameMode* Gm, const FRaceSnapshot& R, const FCarSnapshot& C)
 {
+	DrawStartLights(R);
 	const FRaceSnapshot::FRow* Me = R.Standings.FindByPredicate([](const FRaceSnapshot::FRow& Row) { return Row.bPlayer; });
 	if (!Me) return;
 	FString Msg, Sub;

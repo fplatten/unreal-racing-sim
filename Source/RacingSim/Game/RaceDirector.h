@@ -49,6 +49,10 @@ struct FRaceSnapshot
 	float PitCountdown = 0.f;
 	float PitStatusTime = 0.f;
 	int32 PitStall = 0;
+	/** Standing start: red lights lit (0..5) while the field waits; -1 once they are out (or a rolling start). */
+	int32 StartLights = -1;
+	/** Seconds since the lights went out (for the "GO"), -1 otherwise. */
+	float GreenTime = -1.f;
 };
 
 /**
@@ -69,6 +73,9 @@ public:
 	static constexpr int32 GridColumns = 3;
 	static constexpr float GridRowGap = 18.f;
 	static constexpr float RollingStartSpeed = 58.f;   // m/s (~130 mph)
+	/** Standing start: a red light comes on every LightInterval s; all five go out together. */
+	static constexpr float LightInterval = 1.f;
+	static constexpr float LightsOutAt = 6.2f;
 	static constexpr int32 DownforceSteps = 10;
 	/** Highest wing level an AI car runs (of DownforceSteps). */
 	static constexpr int32 AiMaxDownforce = DownforceSteps;
@@ -80,7 +87,8 @@ public:
 
 	/** Adds a car in grid order (index 0 = pole). Driver null = driven by the keyboard. Game thread, before the race. */
 	void AddCar(ARaceCar* Car, TUniquePtr<FAIDriver> Driver);
-	/** Grid position (s, d) of a slot: rows of three abreast, pole on the inside. */
+	/** Grid position (s, d) of a slot: on the oval rows of three abreast, pole on the inside; on a
+	 *  road course two by two, staggered, behind the start line. */
 	static void GridSlot(int32 Slot, int32 CarCount, float& OutS, float& OutD);
 	/** Lines the field up on the grid and starts a race (applied on the next physics step). */
 	void RequestStart(int32 Laps, int32 Stops);
@@ -132,6 +140,9 @@ private:
 	FCriticalSection FieldLock;
 	int32 PendingLaps = 5, PendingStops = 0;
 	bool bRunning = false;
+	/** Standing start: time since the field lined up (-1: the lights are out), and since they went out. */
+	float LightsTime = -1.f;
+	float GreenTime = -1.f;
 	int32 Recoveries = 0;
 	float PlayerUpsideDown = 0.f, PlayerOutside = 0.f;
 

@@ -41,21 +41,34 @@ private:
 	int64 Seed = 0;
 };
 
-/** Classic oval racing line d(s): high on the straights, low at the apex (RacingLine). */
+/**
+ * The racing line d(s). On the oval the classic line (RacingLine): high on the straights, low at
+ * the apex. On a road course the minimum-curvature line within the road (less the car's width):
+ * out wide, clip the apex, out wide again, worked out once when the track is loaded.
+ */
 class RACINGSIM_API FRacingLine
 {
 public:
 	static constexpr float High = 4.3f;
 	static constexpr float Low = -5.0f;
+	/** How close (m) the road-course line comes to the road edge (car center). */
+	static constexpr float EdgeMargin = 1.3f;
 
 	explicit FRacingLine(const FTrackSpline* InTrack);
 	const FTrackSpline& GetTrack() const { return *Track; }
 	float Offset(float S) const;
+	/** Signed curvature of the line itself (+ = left); road course only. */
+	float PathCurvature(float S) const;
 
 private:
+	void BuildRoadLine();
+
 	const FTrackSpline* Track;
 	TArray<float> Centers;
 	float HalfWidth;
+	// road course: offsets and path curvature every Step metres
+	float Step = 2.f;
+	TArray<float> Offsets, Curv;
 };
 
 /** Target speed along the racing line with a backward braking pass (SpeedProfile). */
@@ -65,13 +78,22 @@ public:
 	FSpeedProfile(const FRacingLine* Line, const FVehicleSpec& Spec, const FAeroModel& Aero, float GripFactor, float BrakingDecel);
 	FSpeedProfile WithAero(const FAeroModel& Aero) const;
 	float At(float S) const;
+	/** Road course: the speed for a fixed lane (constant d) rather than the racing line. */
+	float LaneAt(float S, float D) const;
 	static float CornerSpeed(float M, float R, float Bank, float Mu, float K);
 
 private:
+	/** Road course: corner speeds for curvatures K, then the braking pass (grip, downforce, the
+	 *  grip the turn already uses, and the slope). */
+	void BuildRoad(TArray<float>& Out, TFunctionRef<float(float)> CurvatureAt, float K) const;
+
 	const FRacingLine* Line;
 	FVehicleSpec Spec;
 	float GripFactor, BrakingDecel;
 	TArray<float> Speeds;
+	static constexpr int32 NumLanes = 5;
+	static constexpr float LaneSpacing = 2.5f;   // lanes at d = -5, -2.5, 0, 2.5, 5
+	TArray<float> LaneSpeeds[NumLanes];
 };
 
 /**
@@ -148,6 +170,8 @@ public:
 	};
 
 	void NewRace(int32 Laps, int32 Stops);
+	/** A standing start: the race clock starts as the lights go out, not at the line. */
+	void StartClock() { RaceStartTime = Time; }
 	int32 GetRaceLaps() const { return RaceLaps; }
 	int32 GetRequiredStops() const { return RequiredStops; }
 	bool StopsMet(const FEntry& E) const { return E.PitStops >= RequiredStops; }

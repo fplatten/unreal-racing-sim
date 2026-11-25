@@ -323,7 +323,9 @@ void ARaceCar::PT_Teleport(const FTrackSpline& Spline, float S, float D, float S
 {
 	if (!Rb) return;
 	const FVector Normal = Spline.SurfaceNormal(S, D);
-	const FVector Fwd = Spline.Forward(S);
+	// along the road, up or down its slope (the road course's hills)
+	FVector Fwd = Spline.Forward(S);
+	Fwd = (Fwd - Normal * FVector::DotProduct(Fwd, Normal)).GetSafeNormal();
 	const FVector ComPos = Spline.Point(S, D) + Normal * (Spec.RideHeight() + 0.03f);
 	const FQuat Q = FRotationMatrix::MakeFromXZ(Fwd, Normal).ToQuat();
 	Rb->SetX(ComPos * 100.0 - Q.RotateVector(Rb->CenterOfMass()));
