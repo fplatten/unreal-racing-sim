@@ -133,8 +133,8 @@ void FRacingLine::BuildRoadLine()
 
 // --------------------------------------------------------------------------- FSpeedProfile
 
-FSpeedProfile::FSpeedProfile(const FRacingLine* InLine, const FVehicleSpec& InSpec, const FAeroModel& Aero, float InGrip, float InBraking)
-	: Line(InLine), Spec(InSpec), GripFactor(InGrip), BrakingDecel(InBraking)
+FSpeedProfile::FSpeedProfile(const FRacingLine* InLine, const FVehicleSpec& InSpec, const FAeroModel& Aero, float InGrip, float InBraking, float InBrakeGrip)
+	: Line(InLine), Spec(InSpec), GripFactor(InGrip), BrakingDecel(InBraking), BrakeGrip(InBrakeGrip < 0.f ? BrakeConfidence() : InBrakeGrip)
 {
 	const FTrackSpline& Track = Line->GetTrack();
 	const int32 N = FMath::CeilToInt(FTrackSpline::Length / Resolution);
@@ -200,7 +200,7 @@ void FSpeedProfile::BuildRoad(TArray<float>& Out, TFunctionRef<float(float)> Cur
 			const float GripAcc = GripFactor * (G + K * Next * Next / M);
 			const float Lat = Next * Next * Kabs[i];
 			const float Used = FMath::Clamp(Lat / GripAcc, 0.f, 0.95f);
-			float Decel = FMath::Min(GripAcc * BrakeConfidence(), Spec.MaxBrakeDecel) * FMath::Sqrt(1.f - Used * Used);
+			float Decel = FMath::Min(GripAcc * BrakeGrip, Spec.MaxBrakeDecel) * FMath::Sqrt(1.f - Used * Used);
 			Decel = FMath::Max(Decel + G * Track.Grade(i * Resolution), 2.f);
 			const float Allowed = FMath::Sqrt(Next * Next + 2.f * Decel * Resolution);
 			if (Allowed < Out[i]) Out[i] = Allowed;
@@ -223,7 +223,12 @@ float FSpeedProfile::LaneAt(float S, float D) const
 
 FSpeedProfile FSpeedProfile::WithAero(const FAeroModel& Aero) const
 {
-	return FSpeedProfile(Line, Spec, Aero, GripFactor, BrakingDecel);
+	return FSpeedProfile(Line, Spec, Aero, GripFactor, BrakingDecel, BrakeGrip);
+}
+
+FSpeedProfile FSpeedProfile::WithBrakeGrip(const FAeroModel& Aero, float InBrakeGrip) const
+{
+	return FSpeedProfile(Line, Spec, Aero, GripFactor, BrakingDecel, InBrakeGrip);
 }
 
 float FSpeedProfile::CornerSpeed(float M, float R, float Bank, float Mu, float K)

@@ -68,6 +68,8 @@ public:
 		int32 PassesDone = 0, DraftPassesDone = 0;
 		int32 PassesAborted = 0, EmergencyMoves = 0;
 		int32 AbortStall = 0, AbortLate = 0, AbortYield = 0, AbortBlocked = 0;
+		// road course: passes that went down the inside on the brakes, and how many of them stuck
+		int32 OutbrakeStarts = 0, OutbrakesDone = 0;
 		double ClosingAtStart = 0.0;
 		// why the off-line ticks were off the line
 		int64 OffPassing = 0, OffEmergency = 0, OffHolding = 0, OffAvoiding = 0, OffReturning = 0, OffTracking = 0;
@@ -99,12 +101,17 @@ private:
 	const FTrackSpline* Track;
 	const FRacingLine* Line;
 	FSpeedProfile Profile;
+	/** Road course: the same profile braking later, for a pass down the inside into a turn. */
+	FSpeedProfile LateProfile;
 	float Aggression;
 
 	const FCarCore* PassTarget = nullptr;
 	bool bPassYield = false;
 	bool bPassFromDraft = false;
 	bool bEmergencyMove = false;
+	/** Road course: on the inside of the car being passed, braking later than it into the turn. */
+	bool bOutbraking = false;
+	bool bOutbrakeCounted = false;
 	float PassCooldown = 0.f;
 	float PassStall = 0.f;
 
@@ -115,6 +122,9 @@ private:
 	float StallLimit = 0.f;      // give a pass up when gaining less than this (m/s)
 	float RunGap = 7.f;          // how close (m) a draft run closes up
 	bool bTurnPasser = false;    // veterans: passes in the chutes and turns, side by side through a turn
+	float OutbrakeReach = 6.f;   // road course: down the inside, how far back (m) a pass may still go for the brakes
+	float TopSpeed = 90.f;       // flat out at this wing level, no tow (m/s)
+	float FlatOutSpeed() const;
 	bool bPassTight = false;     // statistics: the current pass began in a turn or a short stretch
 	float TurnExitDistance(float S) const;
 	/** How far before a turn counts as "the turn is near" at speed V. */
@@ -123,6 +133,8 @@ private:
 	 *  to the next braking zone). */
 	bool PassTurn(float S) const;
 	float PassTurnDist(float S) const;
+	/** Direction (+1 left, -1 right) of the turn a pass is racing for. */
+	float PassTurnDirection(float S) const;
 	mutable float CachedBrakeS = -1.f, CachedBrakeDist = 0.f;
 	/** The lanes this car may use (d of its center). */
 	float DMin = -5.6f, DMax = 5.7f;

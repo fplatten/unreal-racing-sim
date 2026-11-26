@@ -910,6 +910,10 @@ void ARacingGameMode::LogClassification()
 		100.0 * A.OffPassing / Off, 100.0 * A.OffEmergency / Off, 100.0 * A.OffAvoiding / Off, 100.0 * A.OffHolding / Off, 100.0 * A.OffReturning / Off, 100.0 * A.OffTracking / Off);
 	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI passing: closing speed at pull-out %.1f m/s; abandoned: not gaining %d, too late for the turn %d, yielded on the outside %d, lane closed %d"),
 		A.PassStarts ? A.ClosingAtStart / A.PassStarts : 0.0, A.AbortStall, A.AbortLate, A.AbortYield, A.AbortBlocked);
+	if (FTrackSpline::IsRoadCourse())
+	{
+		UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI late braking down the inside: %d tried, %d made the pass"), A.OutbrakeStarts, A.OutbrakesDone);
+	}
 	FString Err;
 	for (int32 i = 0; i < UE_ARRAY_COUNT(A.TrackErrCount); i++) if (A.TrackErrCount[i]) Err += FString::Printf(TEXT(" %d:%+.1f"), i * 50, A.TrackErrSum[i] / A.TrackErrCount[i]);
 	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: AI line error by s:%s"), *Err);

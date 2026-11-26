@@ -75,8 +75,12 @@ private:
 class RACINGSIM_API FSpeedProfile
 {
 public:
-	FSpeedProfile(const FRacingLine* Line, const FVehicleSpec& Spec, const FAeroModel& Aero, float GripFactor, float BrakingDecel);
+	/** BrakeGrip: road course, how much of the grip the braking points plan on (negative: the
+	 *  usual, -AiBrakeGrip=). */
+	FSpeedProfile(const FRacingLine* Line, const FVehicleSpec& Spec, const FAeroModel& Aero, float GripFactor, float BrakingDecel, float BrakeGrip = -1.f);
 	FSpeedProfile WithAero(const FAeroModel& Aero) const;
+	/** The same profile braking on BrakeGrip of the grip (a road course's late-braking pass). */
+	FSpeedProfile WithBrakeGrip(const FAeroModel& Aero, float BrakeGrip) const;
 	float At(float S) const;
 	/** Road course: the speed for a fixed lane (constant d) rather than the racing line. */
 	float LaneAt(float S, float D) const;
@@ -89,7 +93,7 @@ private:
 
 	const FRacingLine* Line;
 	FVehicleSpec Spec;
-	float GripFactor, BrakingDecel;
+	float GripFactor, BrakingDecel, BrakeGrip;
 	TArray<float> Speeds;
 	static constexpr int32 NumLanes = 5;
 	static constexpr float LaneSpacing = 2.5f;   // lanes at d = -5, -2.5, 0, 2.5, 5
