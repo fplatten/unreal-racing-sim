@@ -198,7 +198,7 @@ void ARacingHUD::DrawSplash(ARacingGameMode* Gm, float Opacity)
 	}
 	Rect(0, 0, VW, 230, FLinearColor(0, 0, 0, 0.72f));
 	Rect(0, VH * 0.58f, VW, 200, FLinearColor(0, 0, 0, 0.35f));
-	Centered(TEXT("OVAL RACING SIM"), Base * 4.4f, White, VW / 2, VH * 0.58f + 160, true);
+	Centered(TEXT("RACING SIM"), Base * 4.4f, White, VW / 2, VH * 0.58f + 160, true);
 	Centered(FTrackSpline::IsOval() ? TEXT("2.5-MILE OVAL   -   OPEN-WHEEL RACING   -   33-CAR FIELD")
 		: TEXT("4.352-MILE ROAD COURSE   -   OPEN-WHEEL RACING   -   STANDING START"), Base * 1.1f, FLinearColor(1.f, 0.85f, 0.35f, 1), VW / 2, VH * 0.58f + 62);
 
@@ -222,7 +222,7 @@ void ARacingHUD::DrawMenu(ARacingGameMode* Gm)
 	const float Pw = 660, Ph = 732, Px = (VW - Pw) / 2, Py = (VH - Ph) / 2;
 	Rect(Px, Py, Pw, Ph, MenuPanel);
 	Rect(Px, Py + Ph - 6, Pw, 6, Accent);
-	Centered(TEXT("OVAL RACING SIM"), Base * 3.2f, White, VW / 2, Py + Ph - 30, true);
+	Centered(TEXT("RACING SIM"), Base * 3.2f, White, VW / 2, Py + Ph - 30, true);
 	Centered(M.Track == ETrackLayout::Oval ? TEXT("2.5-mile oval  -  open-wheel cars  -  rolling start, three abreast")
 		: TEXT("4.352-mile road course  -  102 m of hills  -  standing start"), Base, MenuDim, VW / 2, Py + Ph - 110);
 	Centered(TEXT("RACE SETUP"), Base * 1.2f, Gold, VW / 2, Py + Ph - 160, true);
