@@ -9,13 +9,14 @@ It is safe to run again: existing assets are replaced. The source files are in S
 
   SourceArt/Models, SourceArt/Textures   glb models and PNGs (from the Java game's src/main/resources)
   SourceArt/Liveries                     painted liveries and helmets (the Java game's `gradlew bakeLiveries`)
-  SourceArt/Generated                    sponsor boards, smoke puffs, tire and body detail maps (`java Scripts/BakeTextures.java SourceArt/Generated`)
+  SourceArt/Generated                    sponsor boards, smoke puffs, tire and body detail maps (`java Scripts/BakeTextures.java SourceArt/Generated`),
+                                         the cars' sponsor lettering (`python Scripts/make_decals.py`)
 
   /Game/Textures/{Track,Car,Props,UI,Sky}/*   PNGs
   /Game/Textures/Liveries/T_{Livery,Helmet}_N  painted cars
   /Game/Textures/Generated/*                   banner, smoke puffs, tire and body detail maps
   /Game/Models/{Car,Props}/*                   glb models (one static mesh each)
-  /Game/Materials/*                            M_Surface(+TwoSided), M_Fence, M_Sky, M_Smoke
+  /Game/Materials/*                            M_Surface(+TwoSided), M_Livery, M_Fence, M_Sky, M_Smoke
   /Game/Maps/Oval                              empty level; the game mode spawns everything
 """
 import os
@@ -36,10 +37,10 @@ def log(msg):
 
 # ------------------------------------------------------------------------------- textures
 
-def import_textures(src_dir, dest):
+def import_textures(src_dir, dest, only=None):
     tasks = []
     for name in sorted(os.listdir(src_dir)):
-        if not name.lower().endswith(".png"):
+        if not name.lower().endswith(".png") or (only and name != only):
             continue
         t = unreal.AssetImportTask()
         t.filename = os.path.join(src_dir, name)
@@ -58,7 +59,7 @@ def import_textures(src_dir, dest):
         if name.endswith("_normal"):
             tex.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
             tex.set_editor_property("srgb", False)
-        elif name.endswith("_rough"):
+        elif name.endswith("_rough") or name.endswith("_mask"):
             tex.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_DEFAULT)
             tex.set_editor_property("srgb", False)
         eal.save_loaded_asset(tex)
@@ -227,6 +228,68 @@ def make_surface_material(path="/Game/Materials/M_Surface", two_sided=False):
     log("material " + path)
 
 
+def make_livery_material():
+    """The cars' paint: a clear-coated base painted by Scripts/livery.hlsl from the position on
+    the car (the Formula car's schemes and helmets), or the texture Albedo (Mode 2: the Indy car's
+    baked liveries). Parameters C1..C4, Pattern, Mode, Seed, Roughness, ClearCoat(Roughness)."""
+    path = "/Game/Materials/M_Livery"
+    m = new_material(path)
+    m.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_CLEAR_COAT)
+    with open(os.path.join(PROJECT_DIR, "Scripts", "livery.hlsl"), encoding="utf-8") as f:
+        hlsl = f.read()
+    code = mel.create_material_expression(m, unreal.MaterialExpressionCustom, -500, 0)
+    code.set_editor_property("code", hlsl)
+    code.set_editor_property("output_type", unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    names = ["P", "N", "T", "C1", "C2", "C3", "C4", "Pattern", "Mode", "Seed", "Decals"]
+    inputs = []
+    for name in names:
+        i = unreal.CustomInput()
+        i.set_editor_property("input_name", name)
+        inputs.append(i)
+    code.set_editor_property("inputs", inputs)
+
+    pos = mel.create_material_expression(m, unreal.MaterialExpressionLocalPosition, -1100, -400)
+    mel.connect_material_expressions(pos, "", code, "P")
+    nws = mel.create_material_expression(m, unreal.MaterialExpressionVertexNormalWS, -1300, -250)
+    nrm = mel.create_material_expression(m, unreal.MaterialExpressionTransform, -1100, -250)
+    nrm.set_editor_property("transform_source_type", unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_WORLD)
+    nrm.set_editor_property("transform_type", unreal.MaterialVectorCoordTransform.TRANSFORM_LOCAL)
+    mel.connect_material_expressions(nws, "", nrm, "")
+    mel.connect_material_expressions(nrm, "", code, "N")
+    tex = tex_param(m, "Albedo", "/Game/Textures/Track/asphalt_albedo", unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, -1100, -100)
+    mel.connect_material_expressions(tex, "RGB", code, "T")
+    decals = mel.create_material_expression(m, unreal.MaterialExpressionTextureObjectParameter, -1100, 50)
+    decals.set_editor_property("parameter_name", "Decals")
+    decals.set_editor_property("texture", unreal.load_asset("/Game/Textures/Generated/decals_mask"))
+    decals.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    mel.connect_material_expressions(decals, "", code, "Decals")
+    defaults = {"C1": (0.9, 0.9, 0.9), "C2": (0.6, 0.02, 0.02), "C3": (0.02, 0.02, 0.02), "C4": (0.9, 0.7, 0.05)}
+    y = 150
+    for name in ("C1", "C2", "C3", "C4"):
+        v = mel.create_material_expression(m, unreal.MaterialExpressionVectorParameter, -1100, y)
+        v.set_editor_property("parameter_name", name)
+        r, g, b = defaults[name]
+        v.set_editor_property("default_value", unreal.LinearColor(r, g, b, 1))
+        mel.connect_material_expressions(v, "", code, name)
+        y += 120
+    for name in ("Pattern", "Mode", "Seed"):
+        mel.connect_material_expressions(scalar(m, name, 0.0, -1100, y), "", code, name)
+        y += 80
+    # (the clear coat inputs are reached through material attributes)
+    m.set_editor_property("use_material_attributes", True)
+    attrs = mel.create_material_expression(m, unreal.MaterialExpressionMakeMaterialAttributes, 0, 0)
+    mel.connect_material_expressions(code, "", attrs, "BaseColor")
+    mel.connect_material_expressions(scalar(m, "Metallic", 0.0, -200, 200), "", attrs, "Metallic")
+    # the paint under the lacquer: satin; the clear coat on top: a mirror-smooth lacquer
+    mel.connect_material_expressions(scalar(m, "Roughness", 0.38, -200, 300), "", attrs, "Roughness")
+    mel.connect_material_expressions(scalar(m, "ClearCoat", 1.0, -200, 400), "", attrs, "ClearCoat")
+    mel.connect_material_expressions(scalar(m, "ClearCoatRoughness", 0.04, -200, 500), "", attrs, "ClearCoatRoughness")
+    mel.connect_material_property(attrs, "", unreal.MaterialProperty.MP_MATERIAL_ATTRIBUTES)
+    mel.recompile_material(m)
+    eal.save_loaded_asset(m)
+    log("material " + path)
+
+
 def make_fence_material():
     m = new_material("/Game/Materials/M_Fence")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
@@ -371,6 +434,11 @@ def make_map():
 
 
 def main():
+    # SETUP_ONLY=livery: just (re)build the car paint material
+    if os.environ.get("SETUP_ONLY") == "livery":
+        import_textures(os.path.join(ART, "Generated"), "/Game/Textures/Generated", only="decals_mask.png")
+        make_livery_material()
+        return
     import_textures(os.path.join(RES, "Textures", "Track"), "/Game/Textures/Track")
     import_textures(os.path.join(RES, "Textures", "Car"), "/Game/Textures/Car")
     import_textures(os.path.join(RES, "Textures", "Props"), "/Game/Textures/Props")
@@ -384,6 +452,7 @@ def main():
     import_models(os.path.join(RES, "Models", "Props"), "/Game/Models/Props", pipeline)
     make_surface_material()
     make_surface_material("/Game/Materials/M_SurfaceTwoSided", True)
+    make_livery_material()
     make_fence_material()
     make_sky_material()
     make_smoke_material()

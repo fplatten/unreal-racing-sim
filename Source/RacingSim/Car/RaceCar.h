@@ -13,6 +13,16 @@ class AOvalTrack;
 
 namespace Chaos { class FRigidBodyHandle_Internal; }
 
+/** The Formula car's paint scheme (M_Livery, Scripts/livery.hlsl): four colors and a pattern for
+ *  the body, three and a pattern for the driver's helmet. */
+struct FCarPaint
+{
+	FLinearColor Body[4] = { FLinearColor(0.9f, 0.9f, 0.9f), FLinearColor(0.6f, 0.02f, 0.02f), FLinearColor(0.02f, 0.02f, 0.02f), FLinearColor(0.9f, 0.7f, 0.05f) };
+	int32 Pattern = 0;
+	FLinearColor Helmet[3] = { FLinearColor(0.9f, 0.9f, 0.9f), FLinearColor(0.6f, 0.02f, 0.02f), FLinearColor(0.02f, 0.02f, 0.02f) };
+	int32 HelmetPattern = 0;
+};
+
 /** What the game thread shows of the car (copied from the physics thread every step). */
 struct FCarSnapshot
 {
@@ -70,6 +80,9 @@ public:
 	void SetIdentity(const FString& Name, int32 Number, bool bHuman, const FLinearColor& Primary, const FLinearColor& Secondary,
 		const FLinearColor& Accent = FLinearColor(0.8f, 0.05f, 0.05f));
 
+	/** The Formula car's paint; call before SetIdentity, which applies it. */
+	void SetPaint(const FCarPaint& InPaint) { Paint = InPaint; }
+
 	FCarCore& Core() { return CoreData; }
 	const FCarCore& Core() const { return CoreData; }
 
@@ -82,6 +95,8 @@ public:
 	void SetTCam(bool bOn) { bTCam = bOn; bSnapCamera = true; }
 	/** Screenshot camera: low, ahead of the car, looking back at it and the pack. */
 	void SetShowcase(bool bOn) { bShowcase = bOn; }
+	/** Close-up screenshot cameras: 0 off, 1 the car from the side, 2 the helmet. */
+	void SetProfileCam(int32 Which) { ProfileCam = Which; }
 	/** World transform of the center of mass (the model root). */
 	FTransform GetComTransform() const;
 	/** Test placement: center of mass (m), orientation, velocity (m/s), wheel speed (m/s); applied on the next physics step. */
@@ -156,6 +171,7 @@ private:
 	FLinearColor LiveryPrimary = FLinearColor(0.9f, 0.9f, 0.9f);
 	FLinearColor LiverySecondary = FLinearColor(0.9f, 0.9f, 0.9f);
 	FLinearColor LiveryAccent = FLinearColor(0.8f, 0.05f, 0.05f);
+	FCarPaint Paint;
 
 	// ---- game thread -> physics thread ----
 	std::atomic<bool> KeyThrottle{ false }, KeyBrake{ false }, KeyLeft{ false }, KeyRight{ false };
@@ -191,6 +207,7 @@ private:
 	// ---- camera ----
 	bool bTCam = false;
 	bool bShowcase = false;
+	int32 ProfileCam = 0;
 	bool bSnapCamera = true;
 	FVector SmoothedOffset = FVector(-850, 0, 260);
 };

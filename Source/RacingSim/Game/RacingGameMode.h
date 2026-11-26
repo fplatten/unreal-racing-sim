@@ -192,6 +192,7 @@ private:
 	bool bShotMenu = false;
 	bool bShotTCam = false;
 	bool bShotShowcase = false;
+	int32 ShotProfile = 0;
 	bool bShotNoHud = false;
 	TArray<float> ShotTimes;
 	int32 NextShot = 0;

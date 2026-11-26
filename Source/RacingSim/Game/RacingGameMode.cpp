@@ -25,6 +25,7 @@
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/SkyLight.h"
 #include "Engine/World.h"
+#include "GameFramework/GameUserSettings.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/HUD.h"
 #include "Kismet/GameplayStatics.h"
@@ -182,6 +183,56 @@ namespace
 		return L;
 	}
 
+	/**
+	 * The Formula cars' paint schemes, after the many-colored liveries of 1995: four body colors
+	 * and a pattern (Scripts/livery.hlsl: 0 split, 1 sweep, 2 arrow, 3 blocks, 4 stripes, 5 wave),
+	 * three helmet colors and a helmet pattern. The first eight go with LiveryForIndex's names
+	 * (the player's car is white and red); the rest are drawn from a set of real paint colors.
+	 */
+	FCarPaint PaintForIndex(int32 Index)
+	{
+		struct FScheme { int32 Pattern; FColor Body[4]; int32 HelmetPattern; FColor Helmet[3]; };
+		const FColor White(242, 242, 238), Red(200, 16, 18), Black(14, 14, 16), Navy(14, 30, 92), Royal(18, 62, 178),
+			Sky(70, 150, 230), Yellow(250, 204, 20), Green(10, 112, 52), Orange(250, 115, 12), Purple(84, 30, 140),
+			Silver(160, 164, 170), Teal(0, 118, 132), Maroon(110, 14, 28), Gold(214, 164, 52), Magenta(200, 18, 120), Lime(150, 200, 30);
+		static const FScheme Schemes[] = {
+			{ 0, { White, Red, Black, Black }, 4, { White, Red, Navy } },          // Player: white over red
+			{ 3, { Red, White, Black, Yellow }, 1, { Yellow, Green, Royal } },     // Crimson
+			{ 1, { Orange, Navy, White, Sky }, 3, { White, Orange, Navy } },       // Papaya
+			{ 5, { Green, White, Yellow, Black }, 2, { Green, Yellow, White } },   // Viper
+			{ 4, { Black, Gold, White, Gold }, 0, { Black, Gold, White } },        // Midnight
+			{ 2, { Yellow, Royal, Green, Red }, 5, { Yellow, Royal, Red } },       // Sunburst
+			{ 1, { Purple, Magenta, White, Yellow }, 3, { Magenta, White, Yellow } },   // Magenta
+			{ 0, { White, Teal, Orange, Navy }, 4, { Teal, Orange, White } },      // Teal
+		};
+		auto Lin = [](const FColor& C) { return FLinearColor::FromSRGBColor(C); };
+		FCarPaint P;
+		if (Index < UE_ARRAY_COUNT(Schemes))
+		{
+			const FScheme& Sc = Schemes[Index];
+			for (int32 i = 0; i < 4; i++) P.Body[i] = Lin(Sc.Body[i]);
+			for (int32 i = 0; i < 3; i++) P.Helmet[i] = Lin(Sc.Helmet[i]);
+			P.Pattern = Sc.Pattern;
+			P.HelmetPattern = Sc.HelmetPattern;
+			return P;
+		}
+		// the rest: distinct colors from the set, a different pattern and helmet each
+		const FColor Set[] = { Royal, Red, Yellow, Green, Orange, Navy, Purple, Teal, Maroon, Sky, Silver, Magenta, Black, Lime, Gold, White };
+		const int32 N = UE_ARRAY_COUNT(Set), K = Index - UE_ARRAY_COUNT(Schemes);
+		const int32 A = (K * 5) % N, B = (A + 3 + K % 4) % N, C = (A + 7 + K % 3) % N;
+		const FColor Fourth = K % 2 ? White : Yellow;
+		P.Body[0] = Lin(Set[A]);
+		P.Body[1] = Lin(Set[B]);
+		P.Body[2] = Lin(Set[C] == Set[A] ? White : Set[C]);
+		P.Body[3] = Lin(Fourth);
+		P.Pattern = K % 6;
+		P.Helmet[0] = Lin(Set[B]);
+		P.Helmet[1] = Lin(Set[A]);
+		P.Helmet[2] = Lin(Fourth);
+		P.HelmetPattern = (K + 2) % 6;
+		return P;
+	}
+
 	FString LapStr(float T)
 	{
 		return FMath::IsNaN(T) ? FString(TEXT("--.--")) : FString::Printf(TEXT("%.2f"), T);
@@ -308,7 +359,22 @@ void ARacingGameMode::StartPlay()
 	FParse::Value(Cmd, TEXT("ShotCam="), Cam);
 	bShotTCam = Cam == TEXT("tcam");
 	bShotShowcase = Cam == TEXT("showcase");
+	ShotProfile = Cam == TEXT("profile") ? 1 : Cam == TEXT("helmet") ? 2 : 0;
 	bShotNoHud = FParse::Param(Cmd, TEXT("ShotNoHud"));
+
+	// start in borderless fullscreen at the desktop's resolution, once per run (the level reloads on a
+	// change of track; Alt+Enter still toggles a window), unless -windowed
+	static bool bScreenSet = false;
+	if (!bScreenSet && !GIsEditor && !FParse::Param(Cmd, TEXT("windowed")))
+	{
+		bScreenSet = true;
+		if (UGameUserSettings* Settings = GEngine ? GEngine->GetGameUserSettings() : nullptr)
+		{
+			Settings->SetFullscreenMode(EWindowMode::WindowedFullscreen);
+			Settings->SetScreenResolution(Settings->GetDesktopResolution());
+			Settings->ApplySettings(false);
+		}
+	}
 
 	Super::StartPlay();
 	SplashStatus = LoadStepText(0) + TEXT("...");
@@ -431,6 +497,10 @@ ARaceCar* ARacingGameMode::SpawnCar(int32 Slot, int32 CarCount, int32 LiveryInde
 	const FVector Pos = Spline.Point(S, D) * 100.0 + FVector(0, 0, 60);
 	ARaceCar* Car = GetWorld()->SpawnActor<ARaceCar>(ARaceCar::StaticClass(), Pos, Spline.Forward(S).Rotation(), Params);
 	const FLivery L = LiveryForIndex(LiveryIndex);
+	// (-PlayerPaint=N: the player's car in another scheme)
+	int32 PaintIndex = LiveryIndex;
+	if (bHuman) FParse::Value(FCommandLine::Get(), TEXT("PlayerPaint="), PaintIndex);
+	Car->SetPaint(PaintForIndex(FMath::Max(PaintIndex, 0)));
 	Car->SetIdentity(NameOverride.IsEmpty() ? L.Name : NameOverride, L.Number, bHuman, L.Primary, L.Secondary, L.Accent);
 	FieldCars.Add(Car);
 	return Car;
@@ -528,6 +598,7 @@ void ARacingGameMode::StartRace()
 		Watched->SetDrivingEnabled(true);
 		if (bShotTCam) Watched->SetTCam(true);
 		if (bShotShowcase) Watched->SetShowcase(true);
+		if (ShotProfile) Watched->SetProfileCam(ShotProfile);
 		// clean renders (the splash art): no HUD drawn over the scene
 		if (bShotNoHud && Pc() && Pc()->GetHUD()) Pc()->GetHUD()->bShowHUD = false;
 		if (Pc()) Pc()->SetViewTarget(Watched);

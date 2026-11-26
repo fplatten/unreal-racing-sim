@@ -168,30 +168,33 @@ void ARaceCar::BeginPlay()
 
 void ARaceCar::ApplyLivery()
 {
+	// The paint is M_Livery: a satin base under a glossy clear coat that mirrors the sky.
 	// The Indy car: the livery and helmet are painted by the Java LiveryPainter / HelmetPainter at
-	// build time (gradlew bakeLiveries) and imported as T_Livery_<number> / T_Helmet_<number>; a car
-	// without a baked texture gets its primary (livery) and secondary (helmet) color.
-	// The Formula car is painted at run time: the model's Livery parts in its primary color,
-	// LiverySecondary in the secondary, LiveryAccent (the pinstripe, the wing tips) and the helmet
-	// in the accent.
-	// The imported glTF materials have their colors baked in, so these parts get the
-	// parameterized surface material.
+	// build time (gradlew bakeLiveries) and imported as T_Livery_<number> / T_Helmet_<number>
+	// (Mode 2: the texture); a car without a baked texture gets its primary (livery) and
+	// secondary (helmet) color on M_Surface.
+	// The Formula car is painted by the material from the position on the car (Scripts/livery.hlsl):
+	// its scheme's colors and pattern on every Livery part, the helmet's on the helmet.
 	const bool bIndy = Spec.Type == ECarType::Indy;
 	UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Surface.M_Surface"));
+	UMaterialInterface* Paintwork = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Livery.M_Livery"));
 	if (!Surface) return;
-	// Java BodyDetail, shared by every livery: panel seams, fasteners, stone chips and rubber
-	// marbles (normal map), and a glossy clear coat that is rougher where the car is dirty
-	// (roughness in R) with the seams darkened (ambient occlusion in G).
-	UTexture* BodyNormal = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/body_normal.body_normal"));
-	UTexture* BodyRough = LoadObject<UTexture>(nullptr, TEXT("/Game/Textures/Generated/body_rough.body_rough"));
 	const TArray<FName> Slots = BodyMesh->GetMaterialSlotNames();
+	// one material instance for the body's parts, one for the helmet
+	UMaterialInstanceDynamic* BodyMid = nullptr;
+	UMaterialInstanceDynamic* HelmetMid = nullptr;
 	for (int32 i = 0; i < Slots.Num(); i++)
 	{
 		const FString SlotName = Slots[i].ToString();
 		const bool bLivery = SlotName.StartsWith(TEXT("Livery"));
 		const bool bHelmet = SlotName.StartsWith(TEXT("Helmet"));
 		if (!bLivery && !bHelmet) continue;
-		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(Surface, this);
+		UMaterialInstanceDynamic*& Shared = bHelmet ? HelmetMid : BodyMid;
+		if (Shared)
+		{
+			BodyMesh->SetMaterial(i, Shared);
+			continue;
+		}
 		UTexture* Painted = nullptr;
 		if (bIndy)
 		{
@@ -199,32 +202,39 @@ void ARaceCar::ApplyLivery()
 			const FString TexPath = FString::Printf(TEXT("/Game/Textures/Liveries/T_%s_%d.T_%s_%d"), *Kind, CoreData.Number, *Kind, CoreData.Number);
 			Painted = LoadObject<UTexture>(nullptr, *TexPath, nullptr, LOAD_Quiet | LOAD_NoWarn);
 		}
-		if (Painted)
+		UMaterialInstanceDynamic* Mid = nullptr;
+		if (Paintwork && (!bIndy || Painted))
 		{
-			Mid->SetTextureParameterValue(TEXT("Albedo"), Painted);
-			Mid->SetScalarParameterValue(TEXT("UseAlbedo"), 1.f);
-			Mid->SetVectorParameterValue(TEXT("Tint"), FLinearColor::White);
+			Mid = UMaterialInstanceDynamic::Create(Paintwork, this);
+			if (Painted)
+			{
+				Mid->SetTextureParameterValue(TEXT("Albedo"), Painted);
+				Mid->SetScalarParameterValue(TEXT("Mode"), 2.f);
+			}
+			else if (bHelmet)
+			{
+				for (int32 c = 0; c < 3; c++) Mid->SetVectorParameterValue(*FString::Printf(TEXT("C%d"), c + 1), Paint.Helmet[c]);
+				Mid->SetScalarParameterValue(TEXT("Pattern"), Paint.HelmetPattern);
+				Mid->SetScalarParameterValue(TEXT("Mode"), 1.f);
+			}
+			else
+			{
+				for (int32 c = 0; c < 4; c++) Mid->SetVectorParameterValue(*FString::Printf(TEXT("C%d"), c + 1), Paint.Body[c]);
+				Mid->SetScalarParameterValue(TEXT("Pattern"), Paint.Pattern);
+				Mid->SetScalarParameterValue(TEXT("Mode"), 0.f);
+				Mid->SetScalarParameterValue(TEXT("Seed"), CoreData.Number * 0.37f);
+			}
+			// the helmet: a harder, glossier shell
+			if (bHelmet) Mid->SetScalarParameterValue(TEXT("Roughness"), 0.25f);
 		}
 		else
 		{
-			const FLinearColor Color = bIndy ? (bLivery ? LiveryPrimary : LiverySecondary)
-				: bHelmet ? LiveryAccent
-				: SlotName.StartsWith(TEXT("LiverySecondary")) ? LiverySecondary
-				: SlotName.StartsWith(TEXT("LiveryAccent")) ? LiveryAccent : LiveryPrimary;
-			Mid->SetVectorParameterValue(TEXT("Tint"), Color);
+			Mid = UMaterialInstanceDynamic::Create(Surface, this);
+			Mid->SetVectorParameterValue(TEXT("Tint"), bLivery ? LiveryPrimary : LiverySecondary);
+			Mid->SetScalarParameterValue(TEXT("Roughness"), bLivery ? 0.25f : 0.10f);
+			Mid->SetScalarParameterValue(TEXT("Metallic"), 0.f);
 		}
-		// clear-coated paint, glossy helmet
-		Mid->SetScalarParameterValue(TEXT("Roughness"), bLivery ? 0.25f : 0.10f);
-		Mid->SetScalarParameterValue(TEXT("Metallic"), 0.f);
-		if (bLivery && BodyNormal && BodyRough)
-		{
-			Mid->SetTextureParameterValue(TEXT("Normal"), BodyNormal);
-			Mid->SetTextureParameterValue(TEXT("RoughTex"), BodyRough);
-			Mid->SetScalarParameterValue(TEXT("UseNormal"), 1.f);
-			Mid->SetScalarParameterValue(TEXT("UseRoughTex"), 1.f);
-			Mid->SetScalarParameterValue(TEXT("UseAO"), 1.f);
-			Mid->SetScalarParameterValue(TEXT("Roughness"), 1.f);   // the map holds the roughness
-		}
+		Shared = Mid;
 		BodyMesh->SetMaterial(i, Mid);
 	}
 
@@ -642,7 +652,19 @@ void ARaceCar::UpdateCamera(float DeltaSeconds)
 		if (Size.Y > 0) Aspect = Size.X / Size.Y;
 	}
 
-	if (bShowcase)
+	if (ProfileCam > 0)
+	{
+		// the paint, close up (screenshots): -ShotCam=profile the car from the left, a little ahead
+		// and above; -ShotCam=helmet the driver's helmet
+		const FVector Right = FVector::CrossProduct(FVector::UpVector, FlatFwd);
+		const bool bHelmet = ProfileCam == 2;
+		const FVector CamPos = bHelmet ? CarPos + FlatFwd * 110.f - Right * 70.f + FVector(0, 0, 75.f)
+			: CarPos + FlatFwd * 120.f - Right * 380.f + FVector(0, 0, 160.f);
+		const FVector LookAt = bHelmet ? CarPos + FlatFwd * 30.f + FVector(0, 0, 50.f) : CarPos + FVector(0, 0, 20.f);
+		Camera->SetWorldLocationAndRotation(CamPos, (LookAt - CamPos).Rotation());
+		Camera->SetFieldOfView(HorizontalFov(50.f, Aspect));
+	}
+	else if (bShowcase)
 	{
 		// port of CameraController.SHOWCASE: 7.5 m ahead, 1.2 m to the left, 1 m up, looking back
 		const FVector Right = FVector::CrossProduct(FVector::UpVector, FlatFwd);
