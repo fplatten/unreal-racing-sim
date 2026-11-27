@@ -54,6 +54,10 @@ struct FRaceSnapshot
 	int32 StartLights = -1;
 	/** Seconds since the lights went out (for the "GO"), -1 otherwise. */
 	float GreenTime = -1.f;
+	/** Track limits: the human player's power cut left (s) and penalties so far; every car's penalties. */
+	float TrackLimitsLeft = 0.f;
+	int32 TrackLimits = 0;
+	int32 TrackLimitsTotal = 0;
 };
 
 /**
@@ -80,6 +84,15 @@ public:
 	static constexpr int32 DownforceSteps = 10;
 	/** Highest wing level an AI car runs (of DownforceSteps). */
 	static constexpr int32 AiMaxDownforce = DownforceSteps;
+	/**
+	 * Track limits (the road course): all four wheels off the tarmac for more than LimitsOffTime s at
+	 * racing speed (a cut corner, or running wide) cuts the car's power to LimitsThrottle for
+	 * LimitsPenalty s; counted again once the car has been back on the tarmac (as the Java game).
+	 */
+	static constexpr float LimitsOffTime = 0.5f;
+	static constexpr float LimitsPenalty = 3.f;
+	static constexpr float LimitsThrottle = 0.2f;
+	static constexpr float LimitsMinSpeed = 15.f;
 
 	ARaceDirector();
 
@@ -130,6 +143,9 @@ private:
 	static TArray<int32> PlanPitLaps(int32 Laps, int32 Stops, int32 Index);
 	void PT_Publish();
 	BotProtocol::EPhase PT_PhaseOf(int32 Index) const;
+	void PT_ApplyTrackLimits(int32 Index, float Dt);
+	/** Per car: time off the tarmac (-1 = penalised, waiting to be back on), penalty left, count. */
+	TArray<FVector3f> Limits;
 	/** Runs car Index's bot this step; false if it has none or it is lost (its AI / player drives). */
 	bool PT_BotDrives(int32 Index, float Dt);
 

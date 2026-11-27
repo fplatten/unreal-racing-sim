@@ -74,6 +74,46 @@ BotProtocol::EPhase ARaceDirector::PT_PhaseOf(int32 Index) const
 	return Laps.GetEntries()[Entries[Index]].bFinished ? BotProtocol::EPhase::Finished : BotProtocol::EPhase::Green;
 }
 
+void ARaceDirector::PT_ApplyTrackLimits(int32 Index, float Dt)
+{
+	if (Limits.Num() != Cars.Num()) Limits.SetNumZeroed(Cars.Num());
+	FVector3f& L = Limits[Index];
+	FCarCore* C = Field[Index];
+	int32 Contact = 0, Tarmac = 0;
+	for (int32 W = 0; W < 4; W++)
+	{
+		const FVehicleSim::FWheel& Wh = C->Sim->GetWheels()[W];
+		if (!Wh.bContact) continue;
+		Contact++;
+		if (Wh.bOnTrack) Tarmac++;
+	}
+	const bool bOff = Contact > 0 && Tarmac == 0;
+	if (!bOff && Contact > 0)
+	{
+		L.X = 0.f;   // back on the tarmac
+	}
+	else if (bOff && L.X >= 0.f && C->Speed() > LimitsMinSpeed && !Laps.GetEntries()[Entries[Index]].bFinished)
+	{
+		L.X += Dt;
+		if (L.X > LimitsOffTime)
+		{
+			L.X = -1.f;
+			L.Y = LimitsPenalty;
+			L.Z += 1.f;
+			if (TSharedPtr<FExternalDriver>* Bot = Bots.Find(Index))
+			{
+				(*Bot)->Event(TEXT("trackLimits"), FString::Printf(TEXT("\"s\":%d,\"penalty\":%g,\"count\":%d"),
+					FMath::RoundToInt(C->S), LimitsPenalty, (int32)L.Z));
+			}
+		}
+	}
+	if (L.Y > 0.f)
+	{
+		L.Y = FMath::Max(0.f, L.Y - Dt);
+		C->Input().Throttle = FMath::Min(C->Input().Throttle, LimitsThrottle);
+	}
+}
+
 bool ARaceDirector::PT_BotDrives(int32 Index, float Dt)
 {
 	TSharedPtr<FExternalDriver>* Bot = Bots.Find(Index);
@@ -97,6 +137,7 @@ void ARaceDirector::ClearField()
 	BotsHandedBack.Reset();
 	BotLaps.Reset();
 	BotStuckTime.Reset();
+	Limits.Reset();
 	bFieldReady = false;
 	bRunning = false;
 	Cars.Reset();
@@ -287,6 +328,10 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 		if (Drivers[i]) Drivers[i]->Update(Dt, Field);
 		else Cars[i]->PT_ApplyPlayerInput(Dt);
 	}
+	if (bRunning && !bWaitingForLights && FTrackSpline::IsRoadCourse())
+	{
+		for (int32 i = 0; i < Cars.Num(); i++) PT_ApplyTrackLimits(i, Dt);
+	}
 
 	for (int32 i = 0; i < Cars.Num(); i++)
 	{
@@ -386,6 +431,8 @@ void ARaceDirector::PT_StartRace()
 	}
 	Laps.UpdatePositions();
 	Recoveries = 0;
+	Limits.Reset();
+	Limits.SetNumZeroed(Cars.Num());
 	bRunning = true;
 	// the bots learn their car (its wing is set by now) and the track
 	for (const TPair<int32, TSharedPtr<FExternalDriver>>& B : Bots) B.Value->Welcome(B.Key + 1, TEXT("race"), Track->GetSpline());
@@ -516,7 +563,11 @@ void ARaceDirector::PT_Publish()
 		Snap.PitCountdown = P.Countdown();
 		Snap.PitStatusTime = P.StatusTime();
 		Snap.PitStall = P.GetStall();
+		Snap.TrackLimitsLeft = Limits.IsValidIndex(i) ? Limits[i].Y : 0.f;
+		Snap.TrackLimits = Limits.IsValidIndex(i) ? (int32)Limits[i].Z : 0;
 	}
+	Snap.TrackLimitsTotal = 0;
+	for (const FVector3f& L : Limits) Snap.TrackLimitsTotal += (int32)L.Z;
 	Snap.RaceTime = Laps.RaceTime();
 	Snap.RaceLaps = Laps.GetRaceLaps();
 	Snap.RequiredStops = Laps.GetRequiredStops();

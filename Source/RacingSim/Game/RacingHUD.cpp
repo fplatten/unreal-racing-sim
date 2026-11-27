@@ -462,6 +462,11 @@ void ARacingHUD::DrawPit(ARacingGameMode* Gm, const FRaceSnapshot& R, const FCar
 		Msg = TEXT("PIT LANE");
 		Sub = FString::Printf(TEXT("Your box is the yellow one, number %d on the start/finish line - stop inside it"), R.PitStall + 1);
 	}
+	if (Msg.IsEmpty() && R.TrackLimitsLeft > 0.f)
+	{
+		Msg = TEXT("TRACK LIMITS");
+		Sub = FString::Printf(TEXT("all four wheels off the road: power cut for %.1f s"), R.TrackLimitsLeft);
+	}
 	if (Msg.IsEmpty()) return;
 	const float Y = VH * 0.72f;
 	Centered(Msg, Base * 2.2f, Color, VW / 2, Y, true);

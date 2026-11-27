@@ -113,11 +113,19 @@ The game clamps every value. A missing value, or one that is not a number (NaN, 
 `recovered` means your car crashed, got stuck for 5 s, or went beyond the walls, and was towed
 back onto the track.
 
+```json
+{"type":"event","event":"trackLimits","tick":3302,"s":6686,"penalty":3,"count":2}
+```
+`trackLimits` is the road course's track-limits rule, which applies to every car:
+- **The offence:** all four wheels off the tarmac for more than 0.5 s at over 15 m/s, whether you cut a corner or ran wide.
+- **The penalty:** the throttle is held to 20% for 3 s.
+- **Counting again:** the next offence counts only after the car has been back on the tarmac.
+
 ### game → bot: `bye`
 The classification at the end:
 ```json
 {"type":"bye","track":"road","laps":3,"order":[{"carId":1,"name":"Crimson","bot":false,"position":1,
-  "laps":3,"finished":true,"finishTime":345.2,"bestLap":113.9,"distance":21012,"contacts":0,"lost":false}, ...]}
+  "laps":3,"finished":true,"finishTime":345.2,"bestLap":113.9,"distance":21012,"contacts":0,"trackLimits":0,"lost":false}, ...]}
 ```
 
 ## Timing

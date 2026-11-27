@@ -67,6 +67,10 @@ A bot is a separate program in Python, Java, C#, Lua or anything else that can o
 - **Debug lines:** what a bot sends in `control.debug.lines` is drawn over the track.
 - **Lost bots:** a bot that goes quiet for 2 s, or disconnects, gives its car back to the built-in AI.
 
+## Track limits
+
+On the road course, all four wheels off the tarmac for more than 0.5 s at racing speed cuts the car's power to 20% for 3 s. This applies to every car, and the HUD shows a "TRACK LIMITS" message. It is the same rule as in the Java game, and `-SimCheck` reports how many penalties the field got.
+
 ## AI parameters
 
 The built-in AI reads its tuning from `Content/AI/<track>.properties`: `oval.properties` and `road.properties`, the same files as the Java game's `src/main/resources/AI/`.

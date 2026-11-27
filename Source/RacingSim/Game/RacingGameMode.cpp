@@ -1143,8 +1143,8 @@ void ARacingGameMode::AutomationTick()
 void ARacingGameMode::LogClassification()
 {
 	const FRaceSnapshot R = Director->GetSnapshot();
-	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: car-car contacts %d, recoveries %d, max %s speed %.1f mph"),
-		ARaceCar::CarContacts.load(), R.Recoveries, *Watched->Core().Name, WatchedTop * MphPerMs);
+	UE_LOG(LogRacingSim, Display, TEXT("SimCheck: car-car contacts %d, recoveries %d, track limits %d, max %s speed %.1f mph"),
+		ARaceCar::CarContacts.load(), R.Recoveries, R.TrackLimitsTotal, *Watched->Core().Name, WatchedTop * MphPerMs);
 	float BestSum = 0.f, Fastest = TNumericLimits<float>::Max();
 	int32 BestCount = 0;
 	for (const FRaceSnapshot::FRow& Row : R.Standings)
