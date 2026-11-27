@@ -61,6 +61,8 @@ float AiParams::Get(const TCHAR* Name, float Def)
 	{
 		File = &TrackFiles.Add(FTrackSpline::Layout, ReadProperties(FPaths::ProjectContentDir() / TEXT("AI") /
 			(FString(FTrackSpline::LayoutKey(FTrackSpline::Layout)) + TEXT(".properties"))));
+		UE_LOG(LogTemp, Display, TEXT("AI parameters for the %s: %d from Content/AI/%s.properties"),
+			FTrackSpline::LayoutKey(FTrackSpline::Layout), File->Num(), FTrackSpline::LayoutKey(FTrackSpline::Layout));
 	}
 	if (const FString* S = File->Find(Name)) return FCString::Atof(**S);
 	return Def;
