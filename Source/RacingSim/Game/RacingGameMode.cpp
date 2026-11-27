@@ -1,4 +1,5 @@
 #include "Game/RacingGameMode.h"
+#include "Audio/SoundSynth.h"
 #include "Car/RacingController.h"
 #include "Car/RaceCar.h"
 #include "Game/RaceDirector.h"
@@ -32,6 +33,14 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "UnrealClient.h"
+#include "Engine/GameViewportClient.h"
+#include "HAL/FileManager.h"
+#include "IImageWrapperModule.h"
+#include "ImageCore.h"
+#include "Misc/App.h"
+#include "Misc/FileHelper.h"
+#include "Modules/ModuleManager.h"
+#include "DrawDebugHelpers.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogRacingSim, Log, All);
 
@@ -298,6 +307,7 @@ APlayerController* ARacingGameMode::Pc() const
 void ARacingGameMode::StartPlay()
 {
 	const TCHAR* Cmd = FCommandLine::Get();
+	if (const int32 BotPort = FBotServer::ConfiguredPort(); BotPort > 0) BotServer = FBotServer::Start(BotPort);
 	bSimCheck = FParse::Param(Cmd, TEXT("SimCheck"));
 	bWallCheck = FParse::Param(Cmd, TEXT("WallCheck"));
 	bCarCheck = FParse::Param(Cmd, TEXT("CarCheck"));
@@ -361,6 +371,18 @@ void ARacingGameMode::StartPlay()
 	bShotShowcase = Cam == TEXT("showcase");
 	ShotProfile = Cam == TEXT("profile") ? 1 : Cam == TEXT("helmet") ? 2 : 0;
 	bShotNoHud = FParse::Param(Cmd, TEXT("ShotNoHud"));
+	if (FParse::Value(Cmd, TEXT("Movie="), MovieDir))
+	{
+		// a fixed 30 fps clock: the game (and the physics, which follow it) advance one video frame
+		// per rendered frame however long capturing it takes
+		MovieDir = FPaths::ConvertRelativePathToFull(MovieDir);
+		IFileManager::Get().MakeDirectory(*MovieDir, true);
+		FApp::SetUseFixedTimeStep(true);
+		FApp::SetFixedDeltaTime(1.0 / MovieFps);
+		bAutopilot = true;
+		MovieShotHandle = UGameViewportClient::OnScreenshotCaptured().AddUObject(this, &ARacingGameMode::OnMovieFrame);
+		UE_LOG(LogRacingSim, Display, TEXT("Movie: recording into %s"), *MovieDir);
+	}
 
 	// start in borderless fullscreen at the desktop's resolution, once per run (the level reloads on a
 	// change of track; Alt+Enter still toggles a window), unless -windowed
@@ -389,7 +411,9 @@ void ARacingGameMode::StartPlay()
 
 void ARacingGameMode::LoadingTick(float Dt)
 {
-	// one step per frame so the splash's loading bar moves (as in RaceApp.updateLoading)
+	// one step per frame so the splash's loading bar moves (as in RaceApp.updateLoading); a movie
+	// gives each step a few frames so the bar is watchable
+	if (!MovieDir.IsEmpty() && LoadStep < NumLoadSteps && ++MovieLoadFrames % MovieLoadFramesPerStep != 0) return;
 	UWorld* World = GetWorld();
 	switch (LoadStep)
 	{
@@ -425,7 +449,7 @@ void ARacingGameMode::LoadingTick(float Dt)
 		Smoke->SetCars(FieldCars);
 		break;
 	case 5:
-		if (!bSimCheck) Audio.Init(this);
+		if (!bSimCheck) Audio.Init(this, !MovieDir.IsEmpty());
 		break;
 	default:
 		// a few frames to compile shaders and stream textures behind the splash
@@ -472,14 +496,14 @@ float ARacingGameMode::GetSplashOpacity() const
 float ARacingGameMode::AiGripBase()
 {
 	// the lowest grip the AI plans on: the Indy car's tires give 1.55, the Formula car's 1.9
-	return FVehicleSpec::ForTrack().Type == ECarType::Formula ? 1.50f : 1.22f;
+	return ::AiParams::Get(TEXT("aiGrip"), FVehicleSpec::ForTrack().Type == ECarType::Formula ? 1.50f : 1.22f);
 }
 
 void ARacingGameMode::AiParams(int32 Index, float& Grip, float& Aggression)
 {
 	while (AiParamPool.Num() <= Index)
 	{
-		const float G = AiGripBase() + AiRandom.NextFloat() * 0.10f;   // planned grip
+		const float G = AiGripBase() + AiRandom.NextFloat() * ::AiParams::Get(TEXT("aiGripSpread"), 0.10f);   // planned grip
 		const float A = AiRandom.NextFloat();   // driver type: 0 rookie .. 1 veteran
 		AiParamPool.Add(FVector2f(G, A));
 	}
@@ -555,9 +579,7 @@ void ARacingGameMode::BuildSimCheckField(int32 CarCount, int32 Downforce)
 	FJavaRandom Rnd(42);
 	FAIDriver::Stats = FAIDriver::FStats();
 	// tuning: -AiGrip=<lowest planned grip> -AiGripSpread=<range above it>
-	float GripBase = AiGripBase(), GripSpread = 0.10f;
-	FParse::Value(FCommandLine::Get(), TEXT("AiGrip="), GripBase);
-	FParse::Value(FCommandLine::Get(), TEXT("AiGripSpread="), GripSpread);
+	const float GripBase = AiGripBase(), GripSpread = ::AiParams::Get(TEXT("aiGripSpread"), 0.10f);
 	const int32 WatchedSlot = FMath::Min(5, CarCount - 1);
 	for (int32 Slot = 0; Slot < CarCount; Slot++)
 	{
@@ -590,6 +612,7 @@ void ARacingGameMode::StartRace()
 	State = ERaceState::Race;
 	StateStartTime = GetWorld()->GetRealTimeSeconds();
 	if (!bSimCheck) Director->SetPlayerDownforce(Menu.Downforce / (float)FMenuSettings::DownforceSteps);
+	AttachBots();
 	Director->RequestStart(Menu.Laps(), Menu.PitStops);
 	FinishedFor = 0.f;
 	if (Smoke) Smoke->Clear();
@@ -602,6 +625,64 @@ void ARacingGameMode::StartRace()
 		// clean renders (the splash art): no HUD drawn over the scene
 		if (bShotNoHud && Pc() && Pc()->GetHUD()) Pc()->GetHUD()->bShowHUD = false;
 		if (Pc()) Pc()->SetViewTarget(Watched);
+	}
+}
+
+void ARacingGameMode::AttachBots()
+{
+	Director->DetachBots();
+	if (!BotServer) return;
+	int32 Want = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("BotCount="), Want) && Want > 0)
+	{
+		const double End = FPlatformTime::Seconds() + 60.0;
+		while (BotServer->Ready().Num() < Want && FPlatformTime::Seconds() < End) FPlatformProcess::Sleep(0.02f);
+	}
+	const TArray<TSharedPtr<FBotConnection>> Ready = BotServer->Ready();
+	const TArray<TObjectPtr<ARaceCar>>& Cars = Director->GetCars();
+	TArray<int32> Targets;
+	if (FParse::Param(FCommandLine::Get(), TEXT("BotPlayer")))
+	{
+		for (int32 i = 0; i < Cars.Num(); i++) if (Cars[i]->Core().bPlayer) Targets.Add(i);
+	}
+	for (int32 i = Cars.Num() - 1; i >= 0; i--) if (!Cars[i]->Core().bPlayer) Targets.Add(i);
+	int32 Hz = 30;
+	FParse::Value(FCommandLine::Get(), TEXT("BotHz="), Hz);
+	for (int32 k = 0; k < FMath::Min(Ready.Num(), Targets.Num()); k++)
+	{
+		ARaceCar* Car = Cars[Targets[k]];
+		Director->AttachBot(Targets[k], MakeShared<FExternalDriver>(Ready[k], &Car->Core(), Hz));
+		UE_LOG(LogTemp, Display, TEXT("Bot %s drives %s"), *Ready[k]->Name(), Car->Core().bPlayer ? TEXT("your car") : *Car->Core().Name);
+	}
+}
+
+FString ARacingGameMode::GetBotStatus() const
+{
+	if (!BotServer) return FString();
+	const TArray<TSharedPtr<FBotConnection>> Ready = BotServer->Ready();
+	if (Ready.Num() == 0) return FString::Printf(TEXT("Bot server on port %d: no bots connected"), BotServer->GetPort());
+	FString Names;
+	for (const TSharedPtr<FBotConnection>& B : Ready) Names += (Names.IsEmpty() ? TEXT("") : TEXT(", ")) + B->Name();
+	return TEXT("BOTS: ") + Names + TEXT(" (they take AI cars from the back)");
+}
+
+void ARacingGameMode::DrawBotDebug()
+{
+	if (!BotServer || !Director || !Track) return;
+	const FTrackSpline& Spline = Track->GetSpline();
+	TArray<FVector4f> Lines;
+	TArray<FColor> Colors;
+	for (const TSharedPtr<FExternalDriver>& Bot : Director->GetBots())
+	{
+		if (Bot->IsLost()) continue;
+		Bot->DebugLines(Lines, Colors);
+		for (int32 i = 0; i < Lines.Num(); i++)
+		{
+			const FVector4f& L = Lines[i];
+			const FVector A = Spline.Point(L.X, FMath::Clamp(L.Y, -60.f, 60.f)) * 100.0 + FVector(0, 0, 40);
+			const FVector B = Spline.Point(L.Z, FMath::Clamp(L.W, -60.f, 60.f)) * 100.0 + FVector(0, 0, 40);
+			DrawDebugLine(GetWorld(), A, B, Colors[i], false, -1.f, SDPG_Foreground, 6.f);
+		}
 	}
 }
 
@@ -781,6 +862,7 @@ void ARacingGameMode::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	const float Dt = FMath::Min(DeltaSeconds, 0.1f);
+	if (State == ERaceState::Race) DrawBotDebug();
 	// racing wheel and pedals (DirectInput), read once a frame for the menus and the car
 	if (!bSimCheck && !bWallCheck)
 	{
@@ -789,6 +871,11 @@ void ARacingGameMode::Tick(float DeltaSeconds)
 		// force feedback follows the car you are driving; light centering in the menus
 		const ARaceCar* Mine = State == ERaceState::Race ? GetPlayerCar() : nullptr;
 		Wheel.SetForceFeedback(Mine ? Mine->GetSnapshot().Speed : 0.f);
+	}
+	if (!MovieDir.IsEmpty())
+	{
+		MovieTick(Dt);
+		if (bMovieDone) return;
 	}
 	SplashShown += (SplashTarget - SplashShown) * FMath::Min(1.f, Dt * 12.f);
 	if (SplashTarget - SplashShown < 0.002f) SplashShown = SplashTarget;
@@ -847,6 +934,120 @@ void ARacingGameMode::Tick(float DeltaSeconds)
 			if (FinishedFor > ResultsDelay) ShowResults();
 		}
 	}
+}
+
+// ------------------------------------------------------------------------ one-lap movie
+
+void ARacingGameMode::MovieTick(float Dt)
+{
+	if (bMovieDone) return;
+	// this frame's picture (read back once it is drawn, see OnMovieFrame) and sound
+	FScreenshotRequest::RequestScreenshot(false);
+	MovieFramesRequested++;
+	float Volume = 1.f;
+	if (OutroTime >= 0.f)
+	{
+		float Fade = FMath::Clamp(OutroTime / OutroFade, 0.f, 1.f);
+		Volume = 1.f - Fade * Fade * (3.f - 2.f * Fade);
+	}
+	Audio.RenderOffline(MoviePcm, SoundSynth::Rate / MovieFps, Volume);
+
+	if (MovieFramesRequested > MovieMaxSeconds * MovieFps)
+	{
+		UE_LOG(LogRacingSim, Warning, TEXT("Movie: safety stop after %.0f s"), MovieMaxSeconds);
+		FinishMovie();
+		return;
+	}
+	if (State == ERaceState::Menu && SplashFade <= 0.f)
+	{
+		// the menu settings change on screen (as RaceApp.movieScript): 13 opponents, start P9, go
+		static const TCHAR* Cues[] = {
+			TEXT("1.0 D"), TEXT("1.4 D"),                                                    // track -> laps -> opponents
+			TEXT("1.75 R"), TEXT("2.0 R"), TEXT("2.25 R"), TEXT("2.5 R"), TEXT("2.75 R"), TEXT("3.0 R"),   // 7 -> 13
+			TEXT("3.6 D"), TEXT("4.0 R"), TEXT("4.25 R"), TEXT("4.5 R"),                     // start P6 -> P9
+			TEXT("5.6 E") };
+		MovieMenuTime += Dt;
+		if (MovieCue < UE_ARRAY_COUNT(Cues))
+		{
+			FString At, Key;
+			FString(Cues[MovieCue]).Split(TEXT(" "), &At, &Key);
+			if (MovieMenuTime >= FCString::Atof(*At))
+			{
+				if (Key == TEXT("D")) Menu.Row = (Menu.Row + 1) % FMenuSettings::Rows;
+				else if (Key == TEXT("R")) ChangeSetting(1);
+				else StartRace();
+				MovieCue++;
+			}
+		}
+	}
+	if (State != ERaceState::Race && State != ERaceState::Results) return;
+	const float Before = MovieRaceTime;
+	MovieRaceTime += Dt;
+	auto Cut = [&](float At, bool bTCam) { if (Before < At && MovieRaceTime >= At && Watched) Watched->SetTCam(bTCam); };
+	Cut(9.5f, true);    // T-cam
+	Cut(14.5f, false);  // back to the chase camera
+	Cut(27.f, true);
+	Cut(33.f, false);
+	if (OutroTime < 0.f && Director && Watched)
+	{
+		// the outro starts as the player completes lap 1
+		const FRaceSnapshot R = Director->GetSnapshot();
+		const FRaceSnapshot::FRow* Me = R.Standings.FindByPredicate([](const FRaceSnapshot::FRow& Row) { return Row.bPlayer; });
+		if (Me && Me->LapsCompleted >= 1)
+		{
+			OutroTime = 0.f;
+			UE_LOG(LogRacingSim, Display, TEXT("Movie: lap 1 done at race time %.1f s, outro"), R.RaceTime);
+		}
+	}
+	else if (OutroTime >= 0.f)
+	{
+		OutroTime += Dt;
+		if (OutroTime >= OutroFade + OutroTextIn + OutroHold) FinishMovie();
+	}
+}
+
+void ARacingGameMode::OnMovieFrame(int32 Width, int32 Height, const TArray<FColor>& Bitmap)
+{
+	if (bMovieDone || Bitmap.Num() != Width * Height) return;
+	TArray<FColor> Opaque = Bitmap;
+	for (FColor& C : Opaque) C.A = 255;
+	IImageWrapperModule& Images = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+	TArray64<uint8> Jpeg;
+	if (Images.CompressImage(Jpeg, EImageFormat::JPEG, FImageView(Opaque.GetData(), Width, Height), 92))
+	{
+		FFileHelper::SaveArrayToFile(Jpeg, *(MovieDir / FString::Printf(TEXT("frame_%05d.jpg"), MovieFramesWritten)));
+	}
+	MovieFramesWritten++;
+}
+
+void ARacingGameMode::FinishMovie()
+{
+	bMovieDone = true;
+	UGameViewportClient::OnScreenshotCaptured().Remove(MovieShotHandle);
+	// 16-bit stereo PCM WAV at 44.1 kHz
+	const int32 Rate = SoundSynth::Rate, Channels = 2;
+	const uint32 DataBytes = MoviePcm.Num() * sizeof(int16);
+	TArray<uint8> Wav;
+	auto U32 = [&](uint32 V) { Wav.Append((const uint8*)&V, 4); };
+	auto U16 = [&](uint16 V) { Wav.Append((const uint8*)&V, 2); };
+	auto Tag = [&](const char* T) { Wav.Append((const uint8*)T, 4); };
+	Tag("RIFF"); U32(36 + DataBytes); Tag("WAVE");
+	Tag("fmt "); U32(16); U16(1); U16(Channels); U32(Rate); U32(Rate * Channels * 2); U16(Channels * 2); U16(16);
+	Tag("data"); U32(DataBytes);
+	Wav.Append((const uint8*)MoviePcm.GetData(), DataBytes);
+	FFileHelper::SaveArrayToFile(Wav, *(MovieDir / TEXT("movie.wav")));
+	UE_LOG(LogRacingSim, Display, TEXT("Movie: %d frames requested, %d written, %.1f s of sound -> %s"),
+		MovieFramesRequested, MovieFramesWritten, MoviePcm.Num() / (2.0 * Rate), *MovieDir);
+	FGenericPlatformMisc::RequestExit(false);
+}
+
+bool ARacingGameMode::GetOutro(float& Black, float& Text) const
+{
+	if (OutroTime < 0.f) return false;
+	const float Fade = FMath::Clamp(OutroTime / OutroFade, 0.f, 1.f);
+	Black = Fade * Fade * (3.f - 2.f * Fade);   // smoothstep
+	Text = FMath::Clamp((OutroTime - OutroFade) / OutroTextIn, 0.f, 1.f);
+	return true;
 }
 
 // ------------------------------------------------------------------- automated checks

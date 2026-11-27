@@ -59,28 +59,27 @@ namespace
 	 *  (the usual following distance is 9-12 m). */
 	float LateBrakeGrip = 0.95f;
 	float OutbrakeDs = 8.f;
-	/** Tuning overrides (-AiLatGain= -AiLatDamp= -AiLookBase= -AiLookK=), read once. */
+	/** Tuning (AiParams: -AiLatGain=, Content/AI/<track>.properties, ...), read again for each track. */
 	void ReadTuning()
 	{
-		static bool bRead = false;
-		if (bRead) return;
-		bRead = true;
-		const TCHAR* Cmd = FCommandLine::Get();
-		FParse::Value(Cmd, TEXT("AiLatGain="), LateralGain);
-		FParse::Value(Cmd, TEXT("AiLatDamp="), LateralDamping);
-		FParse::Value(Cmd, TEXT("AiLookBase="), LookBase);
-		FParse::Value(Cmd, TEXT("AiLookK="), LookPerSpeed);
-		FParse::Value(Cmd, TEXT("AiSling="), SlingshotClosing);
-		FParse::Value(Cmd, TEXT("AiStallGain="), StallGain);
-		FParse::Value(Cmd, TEXT("AiPullOut="), PullOutBase);
-		FParse::Value(Cmd, TEXT("AiDirtyAir="), DirtyAirSlowdown);
-		FParse::Value(Cmd, TEXT("AiRunGap="), DraftRunGap);
-		FParse::Value(Cmd, TEXT("AiSetupGap="), SetupGap);
-		FParse::Value(Cmd, TEXT("AiRunPull="), RunPullOut);
-		FParse::Value(Cmd, TEXT("AiRunDecel="), RunDecel);
-		FParse::Value(Cmd, TEXT("AiRoomClose="), RoomClosing);
-		FParse::Value(Cmd, TEXT("AiLateBrake="), LateBrakeGrip);
-		FParse::Value(Cmd, TEXT("AiOutbrake="), OutbrakeDs);
+		static int32 ReadFor = -1;
+		if (ReadFor == (int32)FTrackSpline::Layout) return;
+		ReadFor = (int32)FTrackSpline::Layout;
+		LateralGain = AiParams::Get(TEXT("aiLatGain"), 0.0025f);
+		LateralDamping = AiParams::Get(TEXT("aiLatDamp"), 0.006f);
+		LookBase = AiParams::Get(TEXT("aiLookBase"), 8.f);
+		LookPerSpeed = AiParams::Get(TEXT("aiLookK"), 0.40f);
+		SlingshotClosing = AiParams::Get(TEXT("aiSling"), 2.5f);
+		StallGain = AiParams::Get(TEXT("aiStallGain"), 0.f);
+		PullOutBase = AiParams::Get(TEXT("aiPullOut"), 12.f);
+		DirtyAirSlowdown = AiParams::Get(TEXT("aiDirtyAir"), 0.08f);
+		DraftRunGap = AiParams::Get(TEXT("aiRunGap"), 7.f);
+		SetupGap = AiParams::Get(TEXT("aiSetupGap"), 0.f);
+		RunPullOut = AiParams::Get(TEXT("aiRunPull"), 1.5f);
+		RunDecel = AiParams::Get(TEXT("aiRunDecel"), 6.f);
+		RoomClosing = AiParams::Get(TEXT("aiRoomClose"), 3.f);
+		LateBrakeGrip = AiParams::Get(TEXT("aiLateBrake"), 0.95f);
+		OutbrakeDs = AiParams::Get(TEXT("aiOutbrake"), 8.f);
 	}
 
 	// pit path

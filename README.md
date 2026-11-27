@@ -57,6 +57,24 @@ UnrealEditor-Cmd.exe RacingSim.uproject /Game/Maps/Oval -game -nullrhi -nosound 
 
 `-SimCheck` races an all-AI field, as the Java `gradlew simCheck -Pplayer=ai` does, and prints the lap times, contacts and classification, plus the AI's race craft: time off the racing line (and why), time three wide, passes started, completed and abandoned, and emergency moves. Add `-Seconds=600` for longer races (the default stops after 260 s). For tuning, `-AiGrip=`, `-AiGripSpread=`, `-AiDownforce=`, `-AiWingMax=`, `-AiSling=`, `-AiStallGain=`, `-AiPullOut=`, `-AiDirtyAir=`, `-AiLookBase=`, `-AiLookK=`, `-AiLatGain=`, `-AiLatDamp=`, `-AiRunGap=`, `-AiRunDecel=`, `-AiRunPull=`, `-AiRoomClose=` and `-AiSetupGap=` override the AI's settings (see `Sim/AIDriver.cpp`), `-AiBrakeGrip=` sets how much of the grip the AI brakes with on a road course, `-AiLateBrake=` and `-AiOutbrake=` how late and from how far back it goes down the inside on the brakes to pass there, `-AiPassLog` logs every pass as it starts and ends, `-Track=road` runs the check on the road course, and `-PowerScale=` scales every car's engine. `-CarCheck` measures a car on the oval's front straight (the Indy car, or the Formula car with `-Car=f1`) at minimum and maximum wing: 0-60 and 0-100 mph, the stop from 200 mph and the top speed. `-WallCheck` fires a car into the wall 54 ways, as the Java `gradlew wallCheck` does.
 
+## Bots: your own AI drivers
+
+Start the game with `-Bots=4510`. Bots connected when a race starts each take an AI car, from the back of the grid forwards. With `-BotPlayer` the first one drives your car, and the menu lists who is connected.
+
+A bot is a separate program in Python, Java, C#, Lua or anything else that can open a socket. It drives over the bot protocol shared with the Java game: [Docs/BotProtocol.md](Docs/BotProtocol.md). The SDKs and baseline bots are in the Java repository's [bots/](https://github.com/fplatten/racing-sim/tree/main/bots) folder. A bot written once races in both games: the baseline bot laps the road course in 120.0 s here and 120.3 s in the Java game.
+
+- **Headless:** `-SimCheck -Bots=4510 -BotCount=1` waits up to 60 s for one bot before the race starts.
+- **Debug lines:** what a bot sends in `control.debug.lines` is drawn over the track.
+- **Lost bots:** a bot that goes quiet for 2 s, or disconnects, gives its car back to the built-in AI.
+
+## AI parameters
+
+The built-in AI reads its tuning from `Content/AI/<track>.properties`: `oval.properties` and `road.properties`, the same files as the Java game's `src/main/resources/AI/`.
+
+- The values are tuned with headless races by the Java version's `tools/train/tune_ai.py`.
+- A `-AiSling=`-style option on the command line overrides a single value.
+- `-AiParams=<file>` loads a whole set.
+
 ## Layout
 
 | Folder | Contents |
@@ -66,3 +84,4 @@ UnrealEditor-Cmd.exe RacingSim.uproject /Game/Maps/Oval -game -nullrhi -nosound 
 | `Source/RacingSim/Car` | The car pawn and tire smoke |
 | `Source/RacingSim/Game` | Race director, game flow (menu, race, results) and the HUD |
 | `Source/RacingSim/Audio` | Procedural engine, tire and wind sound, and the mixer |
+| `Source/RacingSim/Bot` | External bots: the socket server, the sensors and the bot-driven car (port of the Java `com.racingsim.bot`) |

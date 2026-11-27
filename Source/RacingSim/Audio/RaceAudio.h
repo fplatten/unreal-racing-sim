@@ -64,8 +64,14 @@ private:
 class RACINGSIM_API FRaceAudio
 {
 public:
-	/** Synthesizes the loops (about a second of CPU) and starts the stream. */
-	void Init(UObject* Owner);
+	/**
+	 * Synthesizes the loops (about a second of CPU) and starts the stream. Offline (recording a
+	 * movie): nothing is played; RenderOffline mixes the sound one video frame at a time instead.
+	 */
+	void Init(UObject* Owner, bool bOffline = false);
+	/** Offline only: mixes the next Frames stereo sample frames (44.1 kHz) and appends them to Out. */
+	void RenderOffline(TArray<int16>& Out, int32 Frames, float Volume);
+	bool IsReady() const { return Wave != nullptr; }
 	/** @param bActive false = silent (menu, pause prompt) */
 	void Update(float Dt, ARaceCar* Player, const TArray<TObjectPtr<ARaceCar>>& Field, const FVector& ListenerPos,
 		const FVector& ListenerLeft, bool bActive);

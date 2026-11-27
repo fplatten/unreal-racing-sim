@@ -175,6 +175,18 @@ void ARacingHUD::DrawHUD()
 	}
 	const float Splash = Gm->GetSplashOpacity();
 	if (Splash > 0.f) DrawSplash(Gm, Splash);
+
+	// the one-lap movie's outro (-Movie=): fade to black, then the repository link
+	float FadeBlack, Link;
+	if (Gm->GetOutro(FadeBlack, Link))
+	{
+		Alpha = FadeBlack;
+		Rect(0, 0, VW, VH, FLinearColor(0, 0, 0, 1));
+		Alpha = Link;
+		Centered(ARacingGameMode::RepoUrl, Base * 3.4f, White, VW / 2, VH * 0.5f + Base * 3.6f, true);
+		Centered(TEXT("link in the description"), Base * 2.2f, FLinearColor(0.75f, 0.77f, 0.80f, 1.f), VW / 2, VH * 0.5f - Base * 0.4f);
+		Alpha = 1.f;
+	}
 }
 
 // -------------------------------------------------------------------------------- splash
@@ -269,6 +281,10 @@ void ARacingHUD::DrawMenu(ARacingGameMode* Gm)
 	Centered(M.Track == ETrackLayout::Oval ? TEXT("Pit stops: stop in your yellow box (pit lane off turn 4) and stay put for the 8 s countdown.")
 		: TEXT("Standing start: wait on the grid until all five red lights go out, then go."), Base * 0.85f, MenuDim, VW / 2, Py + 59);
 	Centered(TEXT("Race in the draft: tuck in behind a car to cut drag and slingshot past."), Base * 0.85f, MenuDim, VW / 2, Py + 31);
+
+	// external bots (-Bots=): who is connected
+	const FString BotStatus = Gm->GetBotStatus();
+	if (!BotStatus.IsEmpty()) Centered(BotStatus, Base * 0.9f, Gold, VW / 2, Py + Ph + 34);
 
 	// racing wheel: what is connected and what it reads, so the axes and buttons can be checked
 	// and set up (controller.properties next to RacingSim.exe)

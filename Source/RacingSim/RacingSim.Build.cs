@@ -11,7 +11,7 @@ public class RacingSim : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core", "CoreUObject", "Engine", "InputCore",
-			"PhysicsCore", "Chaos", "ProceduralMeshComponent", "Slate", "SlateCore", "RenderCore", "RHI", "AudioExtensions"
+			"PhysicsCore", "Chaos", "ProceduralMeshComponent", "Slate", "SlateCore", "RenderCore", "RHI", "AudioExtensions", "ImageWrapper", "ImageCore", "Sockets", "Networking", "Json"
 		});
 
 		// racing wheels and pedals: DirectInput, and XInput read directly (Unreal's gamepad input has a

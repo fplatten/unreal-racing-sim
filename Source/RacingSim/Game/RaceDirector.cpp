@@ -35,9 +35,68 @@ const FRacingLine* ARaceDirector::GetRacingLine()
 	return Line.Get();
 }
 
+void ARaceDirector::AttachBot(int32 Index, TSharedPtr<FExternalDriver> Bot)
+{
+	FScopeLock Lock(&FieldLock);
+	if (!Cars.IsValidIndex(Index) || !Bot) return;
+	FLapTracker::FEntry& E = Laps.Entry(Entries[Index]);
+	if (!BotCarNames.Contains(Index)) BotCarNames.Add(Index, E.Name);
+	E.Name = Bot->Connection().Name();
+	Bots.Add(Index, Bot);
+}
+
+void ARaceDirector::DetachBots()
+{
+	FScopeLock Lock(&FieldLock);
+	for (const TPair<int32, FString>& N : BotCarNames)
+	{
+		if (Entries.IsValidIndex(N.Key)) Laps.Entry(Entries[N.Key]).Name = N.Value;
+	}
+	Bots.Reset();
+	BotCarNames.Reset();
+	BotsHandedBack.Reset();
+	BotLaps.Reset();
+	BotStuckTime.Reset();
+}
+
+TArray<TSharedPtr<FExternalDriver>> ARaceDirector::GetBots() const
+{
+	FScopeLock Lock(&FieldLock);
+	TArray<TSharedPtr<FExternalDriver>> R;
+	Bots.GenerateValueArray(R);
+	return R;
+}
+
+BotProtocol::EPhase ARaceDirector::PT_PhaseOf(int32 Index) const
+{
+	if (bRunning && LightsTime >= 0.f) return BotProtocol::EPhase::Lights;
+	if (!bRunning) return BotProtocol::EPhase::Grid;
+	return Laps.GetEntries()[Entries[Index]].bFinished ? BotProtocol::EPhase::Finished : BotProtocol::EPhase::Green;
+}
+
+bool ARaceDirector::PT_BotDrives(int32 Index, float Dt)
+{
+	TSharedPtr<FExternalDriver>* Bot = Bots.Find(Index);
+	if (!Bot) return false;
+	const int32 LightsOn = LightsTime >= 0.f ? FMath::Clamp(FMath::FloorToInt(LightsTime / LightInterval), 0, 5) : 0;
+	(*Bot)->Update(Dt, Track->GetSpline(), Field, Laps, Laps.GetEntries()[Entries[Index]], PT_PhaseOf(Index), LightsOn, true);
+	if (!(*Bot)->IsLost()) return true;
+	if (!BotsHandedBack.Contains(Index))
+	{
+		BotsHandedBack.Add(Index);
+		if (Drivers[Index]) Drivers[Index]->ResetLane();
+	}
+	return false;
+}
+
 void ARaceDirector::ClearField()
 {
 	FScopeLock Lock(&FieldLock);
+	Bots.Reset();
+	BotCarNames.Reset();
+	BotsHandedBack.Reset();
+	BotLaps.Reset();
+	BotStuckTime.Reset();
 	bFieldReady = false;
 	bRunning = false;
 	Cars.Reset();
@@ -216,8 +275,15 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 			// (not hard enough to engage reverse)
 			Field[i]->Input().Clear();
 			Field[i]->Input().Brake = 0.45f;
+			// bots still get their states on the grid (the lights)
+			if (TSharedPtr<FExternalDriver>* Bot = bRunning ? Bots.Find(i) : nullptr)
+			{
+				const int32 LightsOn = FMath::Clamp(FMath::FloorToInt(LightsTime / LightInterval), 0, 5);
+				(*Bot)->Update(Dt, Spline, Field, Laps, Laps.GetEntries()[Entries[i]], PT_PhaseOf(i), LightsOn, false);
+			}
 			continue;
 		}
+		if (PT_BotDrives(i, Dt)) continue;
 		if (Drivers[i]) Drivers[i]->Update(Dt, Field);
 		else Cars[i]->PT_ApplyPlayerInput(Dt);
 	}
@@ -235,6 +301,19 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 		for (int32 i = 0; i < Cars.Num(); i++) Laps.Update(Entries[i], Field[i]->S);
 		PT_UpdatePitStops(Dt);
 		Laps.UpdatePositions();
+		for (const TPair<int32, TSharedPtr<FExternalDriver>>& B : Bots)
+		{
+			const FLapTracker::FEntry& E = Laps.GetEntries()[Entries[B.Key]];
+			const int32 Done = E.LapsCompleted();
+			const int32* Before = BotLaps.Find(B.Key);
+			if (Before && Done > *Before)
+			{
+				BotProtocol::FOut F;
+				F.Num(TEXT("lap"), Done).Num(TEXT("lapTime"), E.LastLapTime).Num(TEXT("position"), E.Position).Bool(TEXT("finished"), E.bFinished);
+				B.Value->Event(TEXT("lapComplete"), F.ToString());
+			}
+			BotLaps.Add(B.Key, Done);
+		}
 
 		for (int32 i = 0; i < Cars.Num(); i++)
 		{
@@ -245,7 +324,18 @@ void ARaceDirector::AsyncPhysicsTickActor(float Dt, float SimTime)
 				continue;
 			}
 			const bool bOffTrack = C->D < Spline.MinD(C->S) - 1.f || C->D > Spline.MaxD(C->S) + 2.f || C->Body.Pos.Z < -3.f;
-			if (Drivers[i]->NeedsRecovery() || C->Body.Rot.GetUpVector().Z < 0.3f || bOffTrack) PT_Recover(i);
+			// a bot's car: stuck (under 2 m/s) for 5 s of racing is towed back like an AI car
+			const TSharedPtr<FExternalDriver>* Bot = Bots.Find(i);
+			const bool bBotDriven = Bot && !(*Bot)->IsLost();
+			bool bBotStuck = false;
+			if (bBotDriven && !bWaitingForLights && !Laps.GetEntries()[Entries[i]].bFinished)
+			{
+				float& T = BotStuckTime.FindOrAdd(i);
+				T = C->Speed() < 2.f ? T + Dt : 0.f;
+				bBotStuck = T > 5.f;
+				if (bBotStuck) T = 0.f;
+			}
+			if ((Drivers[i]->NeedsRecovery() && !bBotDriven) || bBotStuck || C->Body.Rot.GetUpVector().Z < 0.3f || bOffTrack) PT_Recover(i);
 		}
 	}
 
@@ -297,6 +387,8 @@ void ARaceDirector::PT_StartRace()
 	Laps.UpdatePositions();
 	Recoveries = 0;
 	bRunning = true;
+	// the bots learn their car (its wing is set by now) and the track
+	for (const TPair<int32, TSharedPtr<FExternalDriver>>& B : Bots) B.Value->Welcome(B.Key + 1, TEXT("race"), Track->GetSpline());
 }
 
 void ARaceDirector::PT_UpdatePitStops(float Dt)
@@ -378,6 +470,10 @@ void ARaceDirector::PT_Recover(int32 Index)
 	}
 	if (FMath::IsNaN(D)) return;
 	Recoveries++;
+	if (TSharedPtr<FExternalDriver>* Bot = Bots.Find(Index))
+	{
+		(*Bot)->Event(TEXT("recovered"), FString::Printf(TEXT("\"s\":%.1f,\"d\":%.2f"), S, D));
+	}
 	Cars[Index]->PT_Teleport(Track->GetSpline(), S, D, 35.f);
 	Laps.Teleport(Entries[Index], S);
 	Drivers[Index]->ResetLane();

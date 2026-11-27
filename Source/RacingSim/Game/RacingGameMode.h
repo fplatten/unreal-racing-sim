@@ -4,6 +4,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Sim/RaceLogic.h"
 #include "Audio/RaceAudio.h"
+#include "Bot/BotProtocol.h"
 #include "RacingGameMode.generated.h"
 
 class AOvalTrack;
@@ -66,6 +67,14 @@ struct FMenuSettings
  *                       the top speed, at minimum and maximum wing, then quits
  *   -AutoShot=6,12,20   screenshots (with the HUD) at these race times, then quit; with -ShotMenu
  *                       the times count from the menu instead (-ShotCam=tcam for the T-cam)
+ *   -Bots=4510          listens for external bots (racing-sim/bots/PROTOCOL.md): the bots connected
+ *                       when a race starts take AI cars from the back of the grid; with -BotPlayer
+ *                       the first one drives your car; -BotCount=N waits (up to 60 s) for N bots
+ *                       before the race starts (with -QuickStart / -SimCheck)
+ *   -Movie=<dir>        records a scripted one-lap movie at a fixed 30 fps into <dir> (JPEG
+ *                       frames and movie.wav): the splash, menu changes, the race with the AI
+ *                       driving your car and T-cam cuts, then a fade to black and the repository
+ *                       link; Scripts/frames_to_mp4.py turns it into an MP4
  */
 UCLASS()
 class RACINGSIM_API ARacingGameMode : public AGameModeBase
@@ -91,6 +100,14 @@ public:
 	/** 1 = splash fully shown, 0 = gone. */
 	float GetSplashOpacity() const;
 	bool IsHelpShown() const { return bShowHelp; }
+	/**
+	 * The one-lap movie's outro (-Movie=): Black = how far the picture has faded to black, Text =
+	 * how far the link has faded in (both 0..1). False when there is no outro.
+	 */
+	bool GetOutro(float& Black, float& Text) const;
+	/** The bot server's line for the menu ("" without one). */
+	FString GetBotStatus() const;
+	static constexpr const TCHAR* RepoUrl = TEXT("https://github.com/fplatten/unreal-racing-sim");
 
 private:
 	void LoadingTick(float Dt);
@@ -205,4 +222,31 @@ private:
 	int32 LeadChanges = 0, Top3Changes = 0;
 	double NextFrontLog = 0.0;
 	double AllFinishedAt = -1.0;
+
+	// ---- -Bots=<port>: external bots ----
+	TUniquePtr<FBotServer> BotServer;
+	/** Hands the race's cars to the connected bots (StartRace). */
+	void AttachBots();
+	/** Draws the bots' debug lines over the track. */
+	void DrawBotDebug();
+
+	// ---- -Movie=<dir>: a scripted one-lap movie at a fixed 30 fps (port of RaceApp's movie) ----
+	static constexpr int32 MovieFps = 30;
+	static constexpr int32 MovieLoadFramesPerStep = 7;
+	static constexpr float MovieMaxSeconds = 300.f;
+	static constexpr float OutroFade = 2.f;
+	static constexpr float OutroTextIn = 1.f;
+	static constexpr float OutroHold = 5.f;
+	/** Every frame: request this frame's picture, run the script, mix this frame's sound. */
+	void MovieTick(float Dt);
+	/** A captured frame: written as a JPEG. */
+	void OnMovieFrame(int32 Width, int32 Height, const TArray<FColor>& Bitmap);
+	/** Writes the sound track (movie.wav) and quits. */
+	void FinishMovie();
+	FString MovieDir;
+	FDelegateHandle MovieShotHandle;
+	int32 MovieFramesRequested = 0, MovieFramesWritten = 0, MovieLoadFrames = 0, MovieCue = 0;
+	float MovieMenuTime = 0.f, MovieRaceTime = 0.f, OutroTime = -1.f;
+	TArray<int16> MoviePcm;
+	bool bMovieDone = false;
 };

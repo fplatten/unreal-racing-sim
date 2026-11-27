@@ -101,6 +101,17 @@ private:
 };
 
 /**
+ * The built-in AI's tuning parameters (port of com.racingsim.ai.AiParams), by their Java names
+ * ("aiSling", "aiGrip", ...). First match wins: the command line (-AiSling=2), the file named by
+ * -AiParams=<file.properties>, the selected track's Content/AI/<track>.properties (the tuned values
+ * the game ships, the same files as the Java version's), the default in the code.
+ */
+namespace AiParams
+{
+	RACINGSIM_API float Get(const TCHAR* Name, float Def);
+}
+
+/**
  * The simulation half of a race car (com.racingsim.vehicle.Car): its vehicle model, the rigid
  * body state of the current physics step and its track-relative position.
  */

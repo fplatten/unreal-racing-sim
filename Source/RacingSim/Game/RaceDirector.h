@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Sim/AIDriver.h"
+#include "Bot/BotProtocol.h"
 #include <atomic>
 #include "RaceDirector.generated.h"
 
@@ -101,6 +102,17 @@ public:
 	/** Wing level of the human player's car (0..1). */
 	void SetPlayerDownforce(float Level);
 
+	/**
+	 * Hands car Index to an external bot (Bot/BotProtocol.h) for the race about to start: call
+	 * after FinishField and before RequestStart (game thread). The car's standings name becomes
+	 * the bot's; a lost bot's car goes back to its AI driver, or to the player's controls.
+	 */
+	void AttachBot(int32 Index, TSharedPtr<FExternalDriver> Bot);
+	/** Removes every bot (their cars get their own names back). Game thread. */
+	void DetachBots();
+	/** The bots in this race (for drawing their debug lines). */
+	TArray<TSharedPtr<FExternalDriver>> GetBots() const;
+
 	/** The racing line every AI driver follows (built on first use). */
 	const FRacingLine* GetRacingLine();
 	FRaceSnapshot GetSnapshot() const;
@@ -117,6 +129,9 @@ private:
 	int32 NextAiStall() const;
 	static TArray<int32> PlanPitLaps(int32 Laps, int32 Stops, int32 Index);
 	void PT_Publish();
+	BotProtocol::EPhase PT_PhaseOf(int32 Index) const;
+	/** Runs car Index's bot this step; false if it has none or it is lost (its AI / player drives). */
+	bool PT_BotDrives(int32 Index, float Dt);
 
 	UPROPERTY()
 	TObjectPtr<AOvalTrack> Track;
@@ -137,7 +152,7 @@ private:
 	std::atomic<bool> bGridPending{ false };
 	bool bFieldReady = false;
 	/** Held by the physics step; the game thread takes it to change the field. */
-	FCriticalSection FieldLock;
+	mutable FCriticalSection FieldLock;
 	int32 PendingLaps = 5, PendingStops = 0;
 	bool bRunning = false;
 	/** Standing start: time since the field lined up (-1: the lights are out), and since they went out. */
@@ -145,6 +160,13 @@ private:
 	float GreenTime = -1.f;
 	int32 Recoveries = 0;
 	float PlayerUpsideDown = 0.f, PlayerOutside = 0.f;
+
+	/** Car index -> its bot (guarded by FieldLock). */
+	TMap<int32, TSharedPtr<FExternalDriver>> Bots;
+	TMap<int32, FString> BotCarNames;
+	TSet<int32> BotsHandedBack;
+	TMap<int32, int32> BotLaps;
+	TMap<int32, float> BotStuckTime;
 
 	mutable FCriticalSection SnapLock;
 	FRaceSnapshot Snap;

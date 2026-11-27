@@ -122,7 +122,21 @@ int32 URaceMixWave::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples
 
 // ---------------------------------------------------------------------------- FRaceAudio
 
-void FRaceAudio::Init(UObject* Owner)
+void FRaceAudio::RenderOffline(TArray<int16>& Out, int32 Frames, float Volume)
+{
+	if (!Wave)
+	{
+		Out.AddZeroed(Frames * 2);
+		return;
+	}
+	TArray<uint8> Pcm;
+	Wave->OnGeneratePCMAudio(Pcm, Frames * 2);
+	const int16* S = (const int16*)Pcm.GetData();
+	const int32 N = Pcm.Num() / (int32)sizeof(int16);
+	for (int32 i = 0; i < N; i++) Out.Add((int16)FMath::RoundToInt(S[i] * Volume));
+}
+
+void FRaceAudio::Init(UObject* Owner, bool bOffline)
 {
 	TArray<TArray<float>> Banks;
 	Banks.Add(SoundSynth::Engine(LowRpm, 0.2f, 11));
@@ -134,6 +148,7 @@ void FRaceAudio::Init(UObject* Owner)
 	Wave = NewObject<URaceMixWave>(Owner);
 	Wave->SetBanks(MoveTemp(Banks));
 	Wave->SoundGroup = SOUNDGROUP_Default;
+	if (bOffline) return;
 
 	AActor* Actor = Cast<AActor>(Owner);
 	Component = NewObject<UAudioComponent>(Owner);

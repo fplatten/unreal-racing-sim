@@ -1,5 +1,7 @@
 #include "Sim/RaceLogic.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 
 // ----------------------------------------------------------------------------- FRacingLine
 
@@ -12,9 +14,56 @@ namespace
 	 *  brakes' own limit is FVehicleSpec::MaxBrakeDecel. */
 	float BrakeConfidence()
 	{
-		static const float C = [] { float V = 0.82f; FParse::Value(FCommandLine::Get(), TEXT("AiBrakeGrip="), V); return V; }();
-		return C;
+		return AiParams::Get(TEXT("aiBrakeGrip"), 0.82f);
 	}
+
+	/** A .properties file's name=value lines. */
+	TMap<FString, FString> ReadProperties(const FString& Path)
+	{
+		TMap<FString, FString> R;
+		TArray<FString> Lines;
+		if (!FFileHelper::LoadFileToStringArray(Lines, *Path)) return R;
+		for (FString L : Lines)
+		{
+			L.TrimStartAndEndInline();
+			FString K, V;
+			if (L.IsEmpty() || L.StartsWith(TEXT("#")) || !L.Split(TEXT("="), &K, &V)) continue;
+			R.Add(K.TrimStartAndEnd(), V.TrimStartAndEnd());
+		}
+		return R;
+	}
+}
+
+float AiParams::Get(const TCHAR* Name, float Def)
+{
+	// the command line: -AiSling=2 for "aiSling"
+	FString Key(Name);
+	if (Key.Len() > 0) Key[0] = FChar::ToUpper(Key[0]);
+	float V;
+	if (FParse::Value(FCommandLine::Get(), *(Key + TEXT("=")), V)) return V;
+	static FCriticalSection Lock;
+	FScopeLock L(&Lock);
+	static FString OverridePath;
+	static TMap<FString, FString> Override;
+	static TMap<ETrackLayout, TMap<FString, FString>> TrackFiles;
+	FString Path;
+	if (FParse::Value(FCommandLine::Get(), TEXT("AiParams="), Path))
+	{
+		if (Path != OverridePath)
+		{
+			OverridePath = Path;
+			Override = ReadProperties(Path);
+		}
+		if (const FString* S = Override.Find(Name)) return FCString::Atof(**S);
+	}
+	TMap<FString, FString>* File = TrackFiles.Find(FTrackSpline::Layout);
+	if (!File)
+	{
+		File = &TrackFiles.Add(FTrackSpline::Layout, ReadProperties(FPaths::ProjectContentDir() / TEXT("AI") /
+			(FString(FTrackSpline::LayoutKey(FTrackSpline::Layout)) + TEXT(".properties"))));
+	}
+	if (const FString* S = File->Find(Name)) return FCString::Atof(**S);
+	return Def;
 }
 
 FRacingLine::FRacingLine(const FTrackSpline* InTrack)
